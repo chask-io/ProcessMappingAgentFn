@@ -557,7 +557,7 @@ PROCESS_MAPPING_CONFIG = AgentConfig(
 # Custom AgentWrapper
 # =============================================================================
 
-class _WhatsAppAgentWrapper(AgentWrapper):
+class _ProcessMappingAgentWrapper(AgentWrapper):
     """AgentWrapper subclass with channel-specific message preparation.
 
     Overrides _prepare_messages to:
@@ -714,24 +714,18 @@ class _WhatsAppAgentWrapper(AgentWrapper):
                 channel_map[self.orchestration_event.channel_id] = (0, channel_kind)
 
             if is_email:
-                relevant = [
-                    evt for evt in orchestration_events
-                    if evt.get("event_type") in EMAIL_DEFAULT_EVENTS
-                ]
-                return EmailEventFormatter.format_events(
-                    relevant,
-                    channel_map=channel_map,
-                    enabled_events=EMAIL_DEFAULT_EVENTS,
-                )
+                formatter, default_events = EmailEventFormatter, EMAIL_DEFAULT_EVENTS
+            else:
+                formatter, default_events = WhatsAppEventFormatter, WHATSAPP_DEFAULT_EVENTS
 
             relevant = [
                 evt for evt in orchestration_events
-                if evt.get("event_type") in WHATSAPP_DEFAULT_EVENTS
+                if evt.get("event_type") in default_events
             ]
-            return WhatsAppEventFormatter.format_events(
+            return formatter.format_events(
                 relevant,
                 channel_map=channel_map,
-                enabled_events=WHATSAPP_DEFAULT_EVENTS,
+                enabled_events=default_events,
             )
 
         except Exception as e:
@@ -765,7 +759,7 @@ class FunctionBackend(AgentFunctionBackend):
         )
 
     def _handle_agent_request(self) -> str:
-        """Use _WhatsAppAgentWrapper for channel-specific message preparation.
+        """Use _ProcessMappingAgentWrapper for channel-specific message preparation.
 
         Agent flow:
         1. Get initial LLM response with tool_choice="required"
@@ -775,7 +769,7 @@ class FunctionBackend(AgentFunctionBackend):
         """
         agent = None
         try:
-            agent = _WhatsAppAgentWrapper(
+            agent = _ProcessMappingAgentWrapper(
                 config=self.config,
                 orchestration_event=self.orchestration_event,
                 openai_api_key=self.openai_api_key,
@@ -806,7 +800,7 @@ class FunctionBackend(AgentFunctionBackend):
             if agent:
                 agent.shutdown()
 
-    def _handle_notify_whatsapp(self, agent: _WhatsAppAgentWrapper) -> str:
+    def _handle_notify_whatsapp(self, agent: _ProcessMappingAgentWrapper) -> str:
         """Handle notify_whatsapp events with a direct LLM response (no tools)."""
         messages = agent._prepare_messages()
 
@@ -818,7 +812,7 @@ class FunctionBackend(AgentFunctionBackend):
 
         return content
 
-    def _handle_notify_email(self, agent: _WhatsAppAgentWrapper) -> str:
+    def _handle_notify_email(self, agent: _ProcessMappingAgentWrapper) -> str:
         """Handle notify_email events with a direct LLM response (no tools)."""
         messages = agent._prepare_messages()
 

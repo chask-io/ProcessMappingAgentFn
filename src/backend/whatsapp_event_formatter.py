@@ -17,7 +17,7 @@ Key Features:
 import json
 import logging
 import re
-from typing import Dict, List, Tuple, Set, Optional, Any, Callable
+from typing import Dict, List, Tuple, Set, Optional, Any
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,6 @@ logger = logging.getLogger(__name__)
 EventDict = Dict[str, Any]
 MessageDict = Dict[str, Any]
 ChannelMap = Dict[str, Tuple[int, str]]
-HandlerFunc = Callable[[EventDict, ChannelMap, Dict], Optional[List[MessageDict]]]
 
 
 # =============================================================================
@@ -342,7 +341,6 @@ class WhatsAppEventFormatter:
 
         # Emit ToolMessage
         if tool_call:
-            effective_name = extra.get("tool_name") or tool_call.get("name", "unknown")
             output.append({
                 "role": "tool",
                 "tool_call_id": matched_id,
