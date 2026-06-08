@@ -8,6 +8,7 @@
   "extra_params": {
     "is_operator_params_test": true,
     "channel": "whatsapp",
+    "explicit_lambda_override": "ProcessMappingAgentFn-812b0b2b486b3a21",
     "conversation_uuid": "00000000-0000-4000-8000-000000000002",
     "user_phone_number": "+56912345678",
     "agent_phone_number": "+56987654321"
