@@ -882,10 +882,15 @@ class FunctionBackend(AgentFunctionBackend):
         messages = agent._prepare_messages()
 
         response = agent._call_llm(messages, force_tool_call=False)
-        content = response.get("content", "")
+        content = response.get("content", "").strip()
+        if not content:
+            logger.warning("notify_whatsapp LLM response was empty; sending fallback prompt response")
+            content = (
+                "Hola, soy Chask. Estoy ayudando a mapear un proceso de la organizacion. "
+                "¿Me puedes contar cual es tu rol y si participas en este proceso?"
+            )
 
-        if content:
-            self._send_whatsapp_response(content)
+        self._send_whatsapp_response(content)
 
         return content
 
