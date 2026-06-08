@@ -3,8 +3,8 @@
 
 ProcessMappingAgentFn - Lambda Handler
 
-Agente para asistir a usuarios en el diseno visual de canvas, layouts
-y diagramas a traves de IA conversacional.
+Process mapping WhatsApp agent using AgentFunctionBackend + LLMClient pattern.
+Handles WhatsApp conversations with dynamic tool loading.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 IMPORTANT: This file contains INFRASTRUCTURE CODE and should NOT be modified.
@@ -97,7 +97,6 @@ def notify_agent_available(orchestration_event: OrchestrationEvent) -> None:
             source="agent",
             target="agent_manager",
             prompt="",
-            extra_params={},
             access_token=orchestration_event.access_token,
             organization_id=orchestration_event.organization.organization_id,
         )
@@ -252,24 +251,52 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
 
 def success_response(result: Dict[str, Any], response_event_sent: bool = False, status_code: int = 200) -> Dict[str, Any]:
-    """Format a successful response."""
+    """
+    Format a successful response.
+
+    Args:
+        result: Result data to return
+        response_event_sent: Whether the response event was sent to orchestrator (REQUIRED at body level!)
+        status_code: HTTP status code
+
+    Returns:
+        Formatted response dictionary with response_event_sent flag at body level
+
+    IMPORTANT: response_event_sent MUST be at the body level, not inside result.
+    The agent manager checks for body.response_event_sent to determine if it needs
+    to send a fallback event.
+    """
     return {
         "statusCode": status_code,
         "body": {
             "status": "ok",
             "result": result,
-            "response_event_sent": response_event_sent
+            "response_event_sent": response_event_sent  # Must be at body level!
         }
     }
 
 
 def error_response(error_message: str, response_event_sent: bool = False, status_code: int = 500) -> Dict[str, Any]:
-    """Format an error response."""
+    """
+    Format an error response.
+
+    Args:
+        error_message: Error message to return
+        response_event_sent: Whether the response event was sent to orchestrator (REQUIRED at body level!)
+        status_code: HTTP status code
+
+    Returns:
+        Formatted error response dictionary with response_event_sent flag at body level
+
+    IMPORTANT: response_event_sent MUST be at the body level, not inside error.
+    The agent manager checks for body.response_event_sent to determine if it needs
+    to send a fallback event.
+    """
     return {
         "statusCode": status_code,
         "body": {
             "status": "error",
             "error": error_message,
-            "response_event_sent": response_event_sent
+            "response_event_sent": response_event_sent  # Must be at body level!
         }
     }

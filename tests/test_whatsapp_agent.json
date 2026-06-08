@@ -1,12 +1,12 @@
 {
   "function_name": "ProcessMappingAgentFn",
-  "event_type": "process_mapping_request",
-  "prompt": "Trabajo en finanzas y participo cuando hay que validar el pago antes de aprobar el pedido.",
+  "event_type": "received_whatsapp_message",
+  "prompt": "Hola, trabajo en finanzas y participo cuando hay que validar el pago antes de aprobar el pedido.",
   "args": {},
   "widget_params": {},
   "extra_params": {
-    "openai_api_key": "${OPENAI_API_KEY}",
-    "model": "gpt-4o",
+    "user_phone_number": "+56912345678",
+    "agent_phone_number": "+56987654321",
     "design_context": {
       "project_uuid": "43ab3f85-0dee-42be-8642-54899534e7ce",
       "canvas_uuid": "35223754-e6bf-4447-826c-6affee85d652",
@@ -16,7 +16,7 @@
   },
   "files": [],
   "metadata": {
-    "description": "Test process mapping request with canvas context and target user profile context",
+    "description": "Test ProcessMappingAgentFn WhatsApp event with canvas and target-user context",
     "expected_status": "success"
   }
 }

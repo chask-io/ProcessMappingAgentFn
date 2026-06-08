@@ -3,7 +3,7 @@
   "test_type": "operator_params",
   "args": {},
   "widget_params": {},
-  "prompt": "Entrevista al miembro sobre su rol y como participa en el proceso de registro de clientes. El canvas y target_user_uuid vienen en extra_params.",
+  "prompt": "Entrevista al miembro por WhatsApp sobre su rol y como participa en el proceso del canvas. El canvas y target_user_uuid vienen en extra_params.",
   "event_type": "function_call",
   "extra_params": {
     "is_operator_params_test": true

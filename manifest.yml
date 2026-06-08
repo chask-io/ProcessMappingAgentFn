@@ -3,20 +3,20 @@ function:
   runtime: python3.12
   handler: handler.lambda_handler
   description: >
-    Agente conversacional para entrevistar miembros de la organizacion,
+    Agente de WhatsApp para entrevistar miembros de la organizacion,
     refinar el canvas de un proceso y completar su perfil de usuario.
   timeout: 300
   memory_size: 1024
   type: agent
+  llm_sockets:
+    - name: process_mapping_agent
+      description: "Main LLM context for process mapping WhatsApp conversations"
+      required: true
   layers:
     - foundationMinimal
     - foundationApi
   parameters:
     required: []
     optional: []
-  llm_sockets:
-    - name: process_mapping_agent
-      description: "Main LLM context for process mapping conversations"
-      required: true
   widget:
     enabled: false
