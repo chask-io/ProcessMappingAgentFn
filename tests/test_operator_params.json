@@ -3,14 +3,15 @@
   "test_type": "operator_params",
   "args": {},
   "widget_params": {},
-  "prompt": "Entrevista al miembro por el canal disponible sobre su rol y como participa en el proceso del canvas. El canvas y target_user_uuid vienen en extra_params.",
-  "event_type": "function_call",
+  "prompt": "Escribe un email breve para iniciar una entrevista de mapeo de procesos. Pregunta por el rol del miembro, si participa en el proceso, y explica que usaras sus respuestas para refinar el canvas.",
+  "event_type": "notify_email",
   "extra_params": {
-    "is_operator_params_test": true
+    "is_operator_params_test": true,
+    "channel": "email"
   },
   "files": [],
   "metadata": {
-    "description": "Test operator generating params for ProcessMappingAgentFn",
+    "description": "Test ProcessMappingAgentFn mandatory operator_params gate through the email notify response path.",
     "expected_status": "success"
   }
 }

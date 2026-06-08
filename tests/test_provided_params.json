@@ -3,18 +3,14 @@
   "test_type": "provided_params",
   "args": {},
   "widget_params": {},
-  "prompt": "Necesito entrevistar a este miembro sobre su participacion en el proceso del canvas.",
-  "event_type": "function_call",
+  "prompt": "Escribe un email breve para iniciar una entrevista de mapeo de procesos. Pregunta por el rol del miembro y si participa en el proceso.",
+  "event_type": "notify_email",
   "extra_params": {
-    "design_context": {
-      "project_uuid": "43ab3f85-0dee-42be-8642-54899534e7ce",
-      "canvas_uuid": "35223754-e6bf-4447-826c-6affee85d652"
-    },
-    "target_user_uuid": "4e8f1a2b-6c73-4d1f-a9d0-3a4b5c6d7e8f"
+    "channel": "email"
   },
   "files": [],
   "metadata": {
-    "description": "Test ProcessMappingAgentFn with explicit params",
+    "description": "Test ProcessMappingAgentFn mandatory provided_params gate through the email notify response path.",
     "expected_status": "success"
   }
 }
