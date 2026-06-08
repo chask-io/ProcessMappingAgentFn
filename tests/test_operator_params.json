@@ -3,15 +3,18 @@
   "test_type": "operator_params",
   "args": {},
   "widget_params": {},
-  "prompt": "Escribe un email breve para iniciar una entrevista de mapeo de procesos. Pregunta por el rol del miembro, si participa en el proceso, y explica que usaras sus respuestas para refinar el canvas.",
-  "event_type": "notify_email",
+  "prompt": "Escribe un mensaje breve de WhatsApp para iniciar una entrevista de mapeo de procesos. Pregunta por el rol del miembro, si participa en el proceso, y explica que usaras sus respuestas para refinar el canvas.",
+  "event_type": "notify_whatsapp",
   "extra_params": {
     "is_operator_params_test": true,
-    "channel": "email"
+    "channel": "whatsapp",
+    "conversation_uuid": "00000000-0000-4000-8000-000000000002",
+    "user_phone_number": "+56912345678",
+    "agent_phone_number": "+56987654321"
   },
   "files": [],
   "metadata": {
-    "description": "Test ProcessMappingAgentFn mandatory operator_params gate through the email notify response path.",
+    "description": "Test ProcessMappingAgentFn mandatory operator_params gate through the WhatsApp notify response path.",
     "expected_status": "success"
   }
 }

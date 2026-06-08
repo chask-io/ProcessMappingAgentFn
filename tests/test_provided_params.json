@@ -3,14 +3,17 @@
   "test_type": "provided_params",
   "args": {},
   "widget_params": {},
-  "prompt": "Escribe un email breve para iniciar una entrevista de mapeo de procesos. Pregunta por el rol del miembro y si participa en el proceso.",
-  "event_type": "notify_email",
+  "prompt": "Escribe un mensaje breve de WhatsApp para iniciar una entrevista de mapeo de procesos. Pregunta por el rol del miembro y si participa en el proceso.",
+  "event_type": "notify_whatsapp",
   "extra_params": {
-    "channel": "email"
+    "channel": "whatsapp",
+    "conversation_uuid": "00000000-0000-4000-8000-000000000001",
+    "user_phone_number": "+56912345678",
+    "agent_phone_number": "+56987654321"
   },
   "files": [],
   "metadata": {
-    "description": "Test ProcessMappingAgentFn mandatory provided_params gate through the email notify response path.",
+    "description": "Test ProcessMappingAgentFn mandatory provided_params gate through the WhatsApp notify response path.",
     "expected_status": "success"
   }
 }

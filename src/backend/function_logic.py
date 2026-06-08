@@ -882,7 +882,12 @@ class FunctionBackend(AgentFunctionBackend):
             return
 
         oe = self.orchestration_event
-        conversation_uuid = oe.channel_id
+        original_extra = oe.extra_params or {}
+        conversation_uuid = (
+            oe.channel_id
+            or original_extra.get("conversation_uuid")
+            or original_extra.get("channel_id")
+        )
         if not conversation_uuid:
             raise ValueError("Missing channel_id (conversation_uuid)")
 
