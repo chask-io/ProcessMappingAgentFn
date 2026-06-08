@@ -388,10 +388,16 @@ def _fetch_selection_detail(oe: OrchestrationEvent, selection_uuid: str) -> dict
 
 
 def _build_user_profile_context(oe: OrchestrationEvent) -> str | None:
-    """Build target-user context from extra_params.target_user_uuid."""
+    """Build target-user context from extra_params or session user data."""
+    session_user_data = None
     target_user_uuid = (oe.extra_params or {}).get("target_user_uuid")
     if not target_user_uuid:
-        logger.info("No target_user_uuid found in extra_params")
+        logger.info("No target_user_uuid found in extra_params; resolving from session")
+        session_user_data = _fetch_session_user_data(oe)
+        target_user_uuid = _extract_user_uuid(session_user_data)
+
+    if not target_user_uuid:
+        logger.info("No target user uuid could be resolved from extra_params or session")
         return None
 
     profile_response = _fetch_target_user_profile(oe, target_user_uuid)
@@ -405,6 +411,9 @@ def _build_user_profile_context(oe: OrchestrationEvent) -> str | None:
     if profile_response:
         lines.append("### Datos existentes")
         lines.append(_format_profile_payload(profile_response))
+    elif session_user_data:
+        lines.append("### Datos de sesion existentes")
+        lines.append(_format_profile_payload(session_user_data))
     else:
         lines.append("No se pudo obtener el perfil actual. Pregunta rol, area y responsabilidades con tacto y guarda lo que aprendas.")
 
@@ -458,6 +467,74 @@ def _fetch_target_user_profile(oe: OrchestrationEvent, target_user_uuid: str) ->
     except Exception as e:
         logger.warning("Failed to fetch target user profile: %s", e)
         return None
+
+
+def _fetch_session_user_data(oe: OrchestrationEvent) -> dict | None:
+    """Fetch session user data to resolve the member when extra_params is sparse."""
+    session_uuid = oe.orchestration_session_uuid
+    if not session_uuid:
+        return None
+    try:
+        response = orchestrator_api_manager.call(
+            "get_orchestration_session_user_data",
+            orchestration_session_uuid=session_uuid,
+            internal_orchestration_session_uuid=oe.internal_orchestration_session_uuid,
+            **_get_api_credentials(oe),
+            raise_on_error=False,
+        )
+        if not _check_api_response(response, "get_orchestration_session_user_data"):
+            return None
+        logger.info(
+            "Fetched session user data for profile context (keys=%s, resolved_user=%s)",
+            sorted(response.keys()) if isinstance(response, dict) else type(response).__name__,
+            _extract_user_uuid(response),
+        )
+        return response
+    except Exception as e:
+        logger.warning("Failed to fetch session user data: %s", e)
+        return None
+
+
+def _extract_user_uuid(payload: Any) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+
+    for key in ("target_user_uuid", "user_uuid", "chask_user_uuid"):
+        value = payload.get(key)
+        if value:
+            return str(value)
+
+    for key in ("user", "chask_user", "target_user", "member"):
+        value = payload.get(key)
+        if isinstance(value, dict):
+            nested_uuid = _extract_user_uuid(value)
+            if nested_uuid:
+                return nested_uuid
+            if value.get("uuid"):
+                return str(value["uuid"])
+
+    customer = payload.get("organization_customer")
+    if isinstance(customer, dict):
+        for key in ("user_uuid", "chask_user_uuid"):
+            if customer.get(key):
+                return str(customer[key])
+        user = customer.get("user")
+        if isinstance(user, dict):
+            nested_uuid = _extract_user_uuid(user)
+            if nested_uuid:
+                return nested_uuid
+        if isinstance(user, str) and user:
+            return user
+
+    active_users = payload.get("active_conversation_users")
+    if isinstance(active_users, list):
+        for item in active_users:
+            if isinstance(item, dict):
+                nested_uuid = _extract_user_uuid(item)
+                if nested_uuid:
+                    return nested_uuid
+
+    return None
 
 
 def _format_profile_payload(payload: dict) -> str:
