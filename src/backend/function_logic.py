@@ -1,8 +1,8 @@
 """
 ProcessMappingAgentFn - Business Logic
 
-WhatsApp channel agent for automatic process mapping. Keeps the WhatsApp
-AgentFunctionBackend event/response plumbing while adding canvas and target-user
+Multi-channel agent for automatic process mapping. Keeps channel-specific
+event formatting for WhatsApp and email while adding canvas and target-user
 profile context for member interviews.
 """
 
@@ -26,6 +26,7 @@ from .whatsapp_prompt_builder import (
     get_whatsapp_prompt_data,
 )
 from .whatsapp_event_formatter import WhatsAppEventFormatter, WHATSAPP_DEFAULT_EVENTS
+from .email_event_formatter import EmailEventFormatter, EMAIL_DEFAULT_EVENTS
 
 LAMBDA_NAME = os.getenv("AWS_LAMBDA_FUNCTION_NAME", "process_mapping_agent")
 logger = logging.getLogger(__name__)
@@ -479,9 +480,15 @@ def _should_inject_operator_reminder(events: List[Dict[str, Any]]) -> bool:
     """Return True when an operator reminder should be injected.
 
     Conditions:
-    1. At least one operator message exists (message_to_whatsapp_agent).
-    2. The last relevant message is from the user (received_whatsapp_message).
+    1. At least one operator message exists.
+    2. The last relevant message is from the user.
     """
+    operator_events = {
+        "message_to_whatsapp_agent",
+        "message_to_agent",
+        "message_to_email_agent",
+    }
+    user_events = {"received_whatsapp_message", "received_email"}
     sorted_events = sorted(events, key=lambda x: x.get("created_at", ""))
 
     has_operator = False
@@ -489,10 +496,10 @@ def _should_inject_operator_reminder(events: List[Dict[str, Any]]) -> bool:
 
     for evt in sorted_events:
         event_type = evt.get("event_type", "")
-        if event_type == "message_to_whatsapp_agent":
+        if event_type in operator_events:
             has_operator = True
             last_relevant = "operator"
-        elif event_type == "received_whatsapp_message":
+        elif event_type in user_events:
             last_relevant = "user"
 
     return has_operator and last_relevant == "user"
@@ -502,39 +509,46 @@ def _should_inject_operator_reminder(events: List[Dict[str, Any]]) -> bool:
 # AgentConfig
 # =============================================================================
 
-WHATSAPP_CONFIG = AgentConfig(
-    source_name="agent",
+PROCESS_MAPPING_EVENTS = WHATSAPP_DEFAULT_EVENTS | EMAIL_DEFAULT_EVENTS | {
+    "need_agent_whatsapp",
+    "user_authenticated",
+    "notify_whatsapp",
+    "context",
+}
+EMAIL_ONLY_EVENTS = (EMAIL_DEFAULT_EVENTS - WHATSAPP_DEFAULT_EVENTS) | {
+    "need_agent_email",
+    "notify_email",
+}
+WHATSAPP_ONLY_EVENTS = (WHATSAPP_DEFAULT_EVENTS - EMAIL_DEFAULT_EVENTS) | {
+    "need_agent_whatsapp",
+    "notify_whatsapp",
+}
+
+PROCESS_MAPPING_CONFIG = AgentConfig(
+    source_name="process_mapping_agent",
     request_event_type="received_whatsapp_message",
     response_event_type="response_to_whatsapp_message",
-    enabled_event_types={
-        "received_whatsapp_message",
-        "response_to_whatsapp_message",
-        "message_to_whatsapp_agent",
-        "function_call",
-        "function_call_response",
-        "function_call_async_error",
-        "analyst_request",
-        "analyst_response",
-        "context",
-        "batch_tool_execution",
-        "execute_plan",
-    },
+    enabled_event_types=PROCESS_MAPPING_EVENTS,
     prompt_builder=build_whatsapp_system_prompt,
     trigger_event_types=[
+        "received_email",
         "need_agent_whatsapp",
+        "need_agent_email",
         "function_call_response",
         "function_call_async_error",
         "execute_plan",
         "user_authenticated",
         "notify_whatsapp",
+        "notify_email",
         "message_to_whatsapp_agent",
+        "message_to_email_agent",
     ],
     socket_name="process_mapping_agent",
     enable_dynamic_tools=True,
     forward_topic="orchestrator",
     default_prompt=(
         "Eres un modelo de lenguaje desarrollado por Chask. "
-        "Entrevista miembros por WhatsApp para mapear procesos y completar perfiles."
+        "Entrevista miembros por email o WhatsApp para mapear procesos y completar perfiles."
     ),
 )
 
@@ -544,12 +558,13 @@ WHATSAPP_CONFIG = AgentConfig(
 # =============================================================================
 
 class _WhatsAppAgentWrapper(AgentWrapper):
-    """AgentWrapper subclass with WhatsApp-specific message preparation.
+    """AgentWrapper subclass with channel-specific message preparation.
 
     Overrides _prepare_messages to:
-    - Use WhatsAppEventFormatter instead of the generic AgentEventFormatter
+    - Use EmailEventFormatter for email sessions
+    - Use WhatsAppEventFormatter for WhatsApp sessions
     - Inject operator reminder when applicable
-    - Inject special event messages for user_authenticated / notify_whatsapp
+    - Inject special event messages for user_authenticated / notify_* events
     """
 
     def _build_system_prompt(self) -> str:
@@ -573,13 +588,13 @@ class _WhatsAppAgentWrapper(AgentWrapper):
     def _call_llm(
         self, messages: List[Dict[str, Any]], force_tool_call: bool = True,
     ) -> Dict[str, Any]:
-        """Call the LLM with WhatsApp-specific metadata and optional tool enforcement.
+        """Call the LLM with process-mapping metadata and optional tool enforcement.
 
         Args:
             messages: Prepared message list to send to the LLM.
             force_tool_call: When True and tools are available, sets
                 tool_choice="required" to ensure the model responds with a
-                tool call. Set to False for notify_whatsapp direct responses.
+                tool call. Set to False for notify_* direct responses.
         """
         temperature = 1.0 if self.model.startswith("gpt-5") else 0.7
 
@@ -620,7 +635,7 @@ class _WhatsAppAgentWrapper(AgentWrapper):
 
     def _prepare_messages(self) -> List[Dict[str, Any]]:
         system_prompt = self._build_system_prompt()
-        conversation_history = self._build_whatsapp_conversation_history()
+        conversation_history = self._build_channel_conversation_history()
 
         # Operator reminder
         if hasattr(self, "_raw_events") and _should_inject_operator_reminder(self._raw_events):
@@ -629,7 +644,7 @@ class _WhatsAppAgentWrapper(AgentWrapper):
 
         # Special trigger events
         event_type = self.orchestration_event.event_type
-        if event_type in ("user_authenticated", "notify_whatsapp"):
+        if event_type in ("user_authenticated", "notify_whatsapp", "notify_email"):
             conversation_history.append(
                 {"role": "system", "content": self.orchestration_event.prompt}
             )
@@ -655,8 +670,29 @@ class _WhatsAppAgentWrapper(AgentWrapper):
 
         return messages
 
-    def _build_whatsapp_conversation_history(self) -> List[Dict[str, Any]]:
-        """Fetch events and format with WhatsAppEventFormatter."""
+    def _is_email_conversation(self, orchestration_events: List[Dict[str, Any]]) -> bool:
+        event_type = self.orchestration_event.event_type
+        if event_type in EMAIL_ONLY_EVENTS:
+            return True
+        if event_type in WHATSAPP_ONLY_EVENTS:
+            return False
+
+        extra = self.orchestration_event.extra_params or {}
+        channel_name = str(extra.get("channel") or extra.get("channel_type") or "").lower()
+        if channel_name in ("email", "whatsapp"):
+            return channel_name == "email"
+
+        for evt in reversed(sorted(orchestration_events, key=lambda x: x.get("created_at", ""))):
+            evt_type = evt.get("event_type", "")
+            if evt_type in EMAIL_ONLY_EVENTS:
+                return True
+            if evt_type in WHATSAPP_ONLY_EVENTS:
+                return False
+
+        return False
+
+    def _build_channel_conversation_history(self) -> List[Dict[str, Any]]:
+        """Fetch events and format with the current channel's event formatter."""
         try:
             response = orchestrator_api_manager.call(
                 "get_orchestration_events",
@@ -671,16 +707,27 @@ class _WhatsAppAgentWrapper(AgentWrapper):
             # Store raw events for operator reminder check
             self._raw_events = orchestration_events
 
-            # Build channel map
             channel_map: Dict[str, Any] = {}
+            is_email = self._is_email_conversation(orchestration_events)
+            channel_kind = "email" if is_email else "whatsapp"
             if self.orchestration_event.channel_id:
-                channel_map[self.orchestration_event.channel_id] = (0, "whatsapp")
+                channel_map[self.orchestration_event.channel_id] = (0, channel_kind)
+
+            if is_email:
+                relevant = [
+                    evt for evt in orchestration_events
+                    if evt.get("event_type") in EMAIL_DEFAULT_EVENTS
+                ]
+                return EmailEventFormatter.format_events(
+                    relevant,
+                    channel_map=channel_map,
+                    enabled_events=EMAIL_DEFAULT_EVENTS,
+                )
 
             relevant = [
                 evt for evt in orchestration_events
                 if evt.get("event_type") in WHATSAPP_DEFAULT_EVENTS
             ]
-
             return WhatsAppEventFormatter.format_events(
                 relevant,
                 channel_map=channel_map,
@@ -688,7 +735,7 @@ class _WhatsAppAgentWrapper(AgentWrapper):
             )
 
         except Exception as e:
-            logger.error(f"Failed to build WhatsApp conversation history: {e}")
+            logger.error(f"Failed to build channel conversation history: {e}")
             return []
 
 
@@ -697,7 +744,7 @@ class _WhatsAppAgentWrapper(AgentWrapper):
 # =============================================================================
 
 class FunctionBackend(AgentFunctionBackend):
-    """Process mapping WhatsApp agent backend.
+    """Process mapping multi-channel agent backend.
 
     Preserves the handler.py contract:
         FunctionBackend(oe, key, model).process_request()
@@ -711,16 +758,16 @@ class FunctionBackend(AgentFunctionBackend):
     ):
         model = model or "gpt-5.1-2025-11-13"
         super().__init__(
-            config=WHATSAPP_CONFIG,
+            config=PROCESS_MAPPING_CONFIG,
             orchestration_event=orchestration_event,
             openai_api_key=openai_api_key,
             model=model,
         )
 
     def _handle_agent_request(self) -> str:
-        """Use _WhatsAppAgentWrapper for WhatsApp-specific message preparation.
+        """Use _WhatsAppAgentWrapper for channel-specific message preparation.
 
-        WhatsApp-specific flow:
+        Agent flow:
         1. Get initial LLM response with tool_choice="required"
         2. If tool call -> invoke tool, return "requested_orchestrator_assistance"
         3. If no tool call (edge case) -> re-invoke via Kafka with explicit
@@ -735,9 +782,11 @@ class FunctionBackend(AgentFunctionBackend):
                 model=self.model,
             )
 
-            # Handle notify_whatsapp specially - direct response, no tools
+            # Handle notify_* specially - direct response, no tools
             if self.orchestration_event.event_type == "notify_whatsapp":
                 return self._handle_notify_whatsapp(agent)
+            if self.orchestration_event.event_type == "notify_email":
+                return self._handle_notify_email(agent)
 
             response_message = agent.get_response()
 
@@ -746,12 +795,12 @@ class FunctionBackend(AgentFunctionBackend):
                 return response_message
 
             # Safety net: tool_choice="required" should prevent this, but if it
-            # happens, re-invoke the whatsapp agent so it tries again with an
+            # happens, re-invoke the agent so it tries again with an
             # explicit instruction to use a tool.
             logger.warning(
                 "LLM returned no tool calls despite tool_choice=required — re-invoking"
             )
-            self._re_invoke_whatsapp_agent()
+            self._re_invoke_agent()
             return response_message
         finally:
             if agent:
@@ -769,11 +818,23 @@ class FunctionBackend(AgentFunctionBackend):
 
         return content
 
-    def _re_invoke_whatsapp_agent(self) -> None:
-        """Re-invoke the whatsapp agent when the LLM fails to produce a tool call.
+    def _handle_notify_email(self, agent: _WhatsAppAgentWrapper) -> str:
+        """Handle notify_email events with a direct LLM response (no tools)."""
+        messages = agent._prepare_messages()
+
+        response = agent._call_llm(messages, force_tool_call=False)
+        content = response.get("content", "")
+
+        if content:
+            self._send_email_response(content)
+
+        return content
+
+    def _re_invoke_agent(self) -> None:
+        """Re-invoke the process mapping agent when the LLM returns no tool call.
 
         Emits an execute_plan event with source=agent so the orchestrator
-        re-targets the whatsapp agent. The prompt instructs the LLM to always
+        re-targets the pinned session agent. The prompt instructs the LLM to always
         respond with a tool call. Failures in the API calls are not raised —
         the current invocation already returned without a tool call, so this
         is a best-effort recovery step.
@@ -783,7 +844,7 @@ class FunctionBackend(AgentFunctionBackend):
         re_invoke_prompt = (
             "DEBES responder con una llamada a herramienta. "
             "Analiza la conversación y ejecuta la herramienta apropiada. "
-            "Si necesitas enviar un mensaje de WhatsApp, usa la herramienta correspondiente."
+            "Si necesitas responder al usuario, usa EmailAlUsuarioFn o WhatsappAlUsuarioFn segun el canal."
         )
 
         try:
@@ -815,10 +876,10 @@ class FunctionBackend(AgentFunctionBackend):
                 organization_id=oe.organization.organization_id,
             )
             logger.info(
-                "Emitted execute_plan to re-invoke whatsapp agent with tool requirement"
+                "Emitted execute_plan to re-invoke process mapping agent with tool requirement"
             )
         except Exception as e:
-            logger.error(f"Failed to re-invoke whatsapp agent: {e}")
+            logger.error(f"Failed to re-invoke process mapping agent: {e}")
 
     def _send_whatsapp_response(self, response_message: str) -> None:
         """Send response as response_to_whatsapp_message with phone numbers."""
@@ -920,3 +981,56 @@ class FunctionBackend(AgentFunctionBackend):
             access_token=response_event.access_token,
             organization_id=response_event.organization.organization_id,
         )
+
+    def _send_email_response(self, body: str) -> None:
+        """Send direct notify_email fallback as email_to_user."""
+        if self.response_event_sent:
+            logger.warning("[DUPLICATE_GUARD] Response already sent, skipping")
+            return
+
+        oe = self.orchestration_event
+        extra_params = {
+            "body": body,
+            "original_source": "agent",
+            "attachments": [],
+        }
+
+        evolve_response = orchestrator_api_manager.call(
+            "evolve_event",
+            parent_event_uuid=str(oe.event_id),
+            event_type="email_to_user",
+            source="agent",
+            target="email",
+            prompt=body,
+            extra_params=extra_params,
+            access_token=oe.access_token,
+            organization_id=oe.organization.organization_id,
+        )
+
+        status_code = evolve_response.get("status_code")
+        if status_code and status_code not in (200, 201):
+            raise Exception(f"Failed to evolve event: {evolve_response.get('error', 'Unknown')}")
+
+        evolved_uuid = evolve_response.get("uuid")
+        if not evolved_uuid:
+            raise Exception("API response missing uuid for evolved event")
+
+        response_event = oe.model_copy(deep=True)
+        response_event.event_id = evolved_uuid
+        response_event.event_type = "email_to_user"
+        response_event.source = "agent"
+        response_event.target = "email"
+        response_event.prompt = body
+        response_event.extra_params = evolve_response.get("extra_params", extra_params)
+        response_event.extra_params["_already_persisted"] = True
+
+        orchestrator_api_manager.call(
+            "forward_oe_to_kafka",
+            orchestration_event=response_event.model_dump(),
+            topic="orchestrator",
+            access_token=response_event.access_token,
+            organization_id=response_event.organization.organization_id,
+        )
+
+        self.response_event_sent = True
+        logger.info(f"Email response sent [evolved from {oe.event_id} -> {evolved_uuid}]")

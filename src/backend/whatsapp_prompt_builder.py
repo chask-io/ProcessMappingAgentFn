@@ -1,10 +1,8 @@
 """
-WhatsApp Agent - System Prompt Builder
+Process Mapping Agent - System Prompt Builder
 
-Builds the system prompt for the WhatsApp agent by fetching organization context,
-user validation data, and active requirements from the Chask APIs.
-
-Extracted from the old WhatsappAgent._build_system_prompt() method.
+Builds the system prompt for the process mapping agent by fetching channel
+context, user validation data, and active requirements from the Chask APIs.
 Returns a plain string (no LangChain dependency).
 """
 
@@ -20,7 +18,7 @@ PROMPT_FILE_PATH = "backend/prompts/process_mapping_prompt.txt"
 
 
 def _load_prompt_template() -> str:
-    """Load WhatsApp agent prompt template from file."""
+    """Load process mapping agent prompt template from file."""
     prompt_path = os.path.join(os.getcwd(), PROMPT_FILE_PATH)
 
     if not os.path.exists(prompt_path):
@@ -40,36 +38,22 @@ def _get_api_credentials(oe: OrchestrationEvent) -> Dict[str, str]:
     }
 
 
-def _fetch_whatsapp_channel_id(oe: OrchestrationEvent) -> str:
-    """Fetch the WhatsApp channel_id from channels API."""
-    from api.channels_requests import channels_api_manager
-
-    creds = _get_api_credentials(oe)
-    channels_response = channels_api_manager.call("get-channels", **creds)
-
-    if "channels" not in channels_response:
-        error_detail = channels_response.get("detail", "Unknown error")
-        error_status = channels_response.get("status_code", "Unknown status")
-        raise ValueError(
-            f"Channels API error: {error_detail} (status: {error_status})"
-        )
-
-    for channel in channels_response["channels"]:
-        if channel["name"] == "whatsapp":
-            return channel["uuid"]
-
-    raise ValueError("WhatsApp channel not found")
-
-
-def _fetch_organization_context(oe: OrchestrationEvent, channel_id: str) -> str:
+def _fetch_organization_context(oe: OrchestrationEvent) -> str:
     """Fetch organization context description for the channel."""
+    if not oe.channel_id:
+        return ""
+
     from api.agent_requests import agent_api_manager
 
     creds = _get_api_credentials(oe)
-    context = agent_api_manager.call(
-        "get-context-by-channel", channel_id=channel_id, **creds,
-    )
-    return context.get("context", "")
+    try:
+        context = agent_api_manager.call(
+            "get-context-by-channel", channel_id=oe.channel_id, **creds,
+        )
+        return context.get("context", "")
+    except Exception as e:
+        logger.warning("Failed to fetch channel context: %s", e)
+        return ""
 
 
 def _fetch_user_data(oe: OrchestrationEvent) -> Dict[str, Any]:
@@ -128,12 +112,11 @@ def apply_template_variables(template: str, data: Dict[str, Any]) -> str:
 
 
 def get_whatsapp_prompt_data(oe: OrchestrationEvent) -> Dict[str, Any]:
-    """Fetch all dynamic data for the WhatsApp prompt template.
+    """Fetch all dynamic data for the process mapping prompt template.
 
     Returns a dict of template variable name -> value.
     """
-    channel_id = _fetch_whatsapp_channel_id(oe)
-    org_context = _fetch_organization_context(oe, channel_id)
+    org_context = _fetch_organization_context(oe)
     user_data = _fetch_user_data(oe)
     client_requirements = _fetch_active_requirements(oe)
 
@@ -144,7 +127,7 @@ def get_whatsapp_prompt_data(oe: OrchestrationEvent) -> Dict[str, Any]:
     )
 
     bot_name = (
-        oe.target_agent.agent_alias if oe.target_agent else "Asistente WhatsApp"
+        oe.target_agent.agent_alias if oe.target_agent else "Agente de Mapeo de Procesos"
     )
 
     return {
@@ -159,7 +142,7 @@ def get_whatsapp_prompt_data(oe: OrchestrationEvent) -> Dict[str, Any]:
 
 
 def build_whatsapp_system_prompt(oe: OrchestrationEvent) -> str:
-    """Build the complete system prompt for the WhatsApp agent.
+    """Build the complete system prompt for the process mapping agent.
 
     This is the prompt_builder callable used by AgentConfig.
 

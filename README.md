@@ -1,6 +1,6 @@
 # ProcessMappingAgentFn
 
-Process mapping WhatsApp agent using AgentFunctionBackend + LLMClient pattern. Handles WhatsApp conversations with dynamic tool loading.
+Process mapping agent using AgentFunctionBackend + LLMClient pattern. Handles email and WhatsApp conversations with dynamic tool loading.
 
 ## Overview
 

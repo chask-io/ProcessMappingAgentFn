@@ -1,0 +1,20 @@
+{
+  "function_name": "ProcessMappingAgentFn",
+  "event_type": "received_email",
+  "prompt": "Hola, trabajo en operaciones y puedo explicar como recibimos y aprobamos pedidos.",
+  "args": {},
+  "widget_params": {},
+  "extra_params": {
+    "design_context": {
+      "project_uuid": "43ab3f85-0dee-42be-8642-54899534e7ce",
+      "canvas_uuid": "35223754-e6bf-4447-826c-6affee85d652",
+      "selection_uuid": "e8d4fb13-eb74-47c8-af7a-275ba6dbeb3e"
+    },
+    "target_user_uuid": "4e8f1a2b-6c73-4d1f-a9d0-3a4b5c6d7e8f"
+  },
+  "files": [],
+  "metadata": {
+    "description": "Test ProcessMappingAgentFn email event with canvas and target-user context",
+    "expected_status": "success"
+  }
+}
