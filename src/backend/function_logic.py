@@ -50,6 +50,9 @@ PIPELINE_COLLECTION_REMINDER = (
 MAX_FILE_CONTENT_CHARS = 3000
 TEXT_MIME_PREFIXES = ("text/", "application/json", "application/xml")
 
+# Module-level singleton; built once per container when BASE_DOMAIN is resolved.
+_users_api_manager = None
+
 
 def _get_api_credentials(oe: OrchestrationEvent) -> Dict[str, str]:
     """Return common API call kwargs."""
@@ -407,26 +410,40 @@ def _build_user_profile_context(oe: OrchestrationEvent) -> str | None:
     return "\n".join(lines)
 
 
-def _fetch_target_user_profile(oe: OrchestrationEvent, target_user_uuid: str) -> dict | None:
-    """Fetch ChaskUser + UserProfile via the foundation ApiManager pattern."""
-    try:
-        from chask_foundation.api.api_manager import ApiManager
+def _get_users_api_manager():
+    """Return a module-level ApiManager for the users endpoint, built once per container."""
+    global _users_api_manager
+    if _users_api_manager is not None:
+        return _users_api_manager
 
-        base_domain = os.getenv("BASE_DOMAIN")
-        if not base_domain:
+    from chask_foundation.api.api_manager import ApiManager
+
+    base_domain = os.getenv("BASE_DOMAIN")
+    if not base_domain:
+        return None
+
+    manager = ApiManager(base_url=f"https://{base_domain}/api/v2/users")
+
+    @manager.register("get_user_profile", "get-user-profile", method="GET")
+    def get_user_profile(user_uuid: str):
+        return {"params": {"user_uuid": user_uuid}}
+
+    _users_api_manager = manager
+    return _users_api_manager
+
+
+def _fetch_target_user_profile(oe: OrchestrationEvent, target_user_uuid: str) -> dict | None:
+    """Fetch target user profile via GET /api/v2/users/get-user-profile.
+
+    The endpoint is provided by chask_api (Stream 1, on feat/process-mapping):
+    GET /api/v2/users/get-user-profile?user_uuid=<uuid> → ChaskUser + UserProfile.
+    Degrades gracefully (returns None) on any error or missing BASE_DOMAIN.
+    """
+    try:
+        users_api_manager = _get_users_api_manager()
+        if users_api_manager is None:
             logger.warning("BASE_DOMAIN is not set; cannot fetch target user profile")
             return None
-
-        users_api_manager = ApiManager(base_url=f"https://{base_domain}/api/v2/users")
-
-        @users_api_manager.register("get_user_profile", "get-user-profile", method="GET")
-        def get_user_profile(user_uuid: str):
-            return {
-                "params": {
-                    "user_uuid": user_uuid,
-                    "target_user_uuid": user_uuid,
-                }
-            }
 
         response = users_api_manager.call(
             "get_user_profile",
