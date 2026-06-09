@@ -107,6 +107,33 @@ def _fetch_canvases(oe: OrchestrationEvent, project_uuid: str | None) -> list:
         return []
 
 
+def _recover_design_context_from_session(oe: OrchestrationEvent) -> dict:
+    """Recover design_context from earlier session events when channel replies omit it."""
+    try:
+        response = orchestrator_api_manager.call(
+            "get_orchestration_events",
+            orchestration_session_id=oe.orchestration_session_uuid,
+            access_token=oe.access_token,
+            organization_id=oe.organization.organization_id,
+        )
+        events = response.get("orchestration_events", []) if isinstance(response, dict) else []
+        if not isinstance(events, list):
+            return {}
+
+        ordered_events = sorted(events, key=lambda ev: ev.get("created_at", ""))
+        best = {}
+        for event in ordered_events:
+            if not isinstance(event, dict):
+                continue
+            design_context = (event.get("extra_params") or {}).get("design_context") or {}
+            if isinstance(design_context, dict) and design_context.get("canvas_uuid"):
+                best = design_context
+        return best or {}
+    except Exception as e:
+        logger.warning("Could not recover design_context from session: %s", e)
+        return {}
+
+
 def _fetch_and_format_project_files(oe: OrchestrationEvent, project_uuid: str | None) -> str:
     """Fetch project files with content and format as markdown."""
     if not project_uuid:
@@ -170,9 +197,13 @@ def _fetch_file_content(api_manager, file_uuid: str, mime_type: str, creds: dict
 
 def _build_canvas_context(oe: OrchestrationEvent) -> str | None:
     """Build canvas + selection context as a trailing system message."""
-    design_context = (oe.extra_params or {}).get("design_context", {})
+    design_context = (oe.extra_params or {}).get("design_context", {}) or {}
     project_uuid = design_context.get("project_uuid")
     canvas_uuid = design_context.get("canvas_uuid")
+    if not canvas_uuid or not project_uuid:
+        recovered = _recover_design_context_from_session(oe)
+        canvas_uuid = canvas_uuid or recovered.get("canvas_uuid")
+        project_uuid = project_uuid or recovered.get("project_uuid")
     logger.info(
         "Canvas context: project=%s, canvas=%s, session=%s",
         project_uuid, canvas_uuid, oe.orchestration_session_uuid,
