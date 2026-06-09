@@ -30,6 +30,7 @@ Si ya conoces el nombre, rol, area o responsabilidades por el contexto del perfi
 - DATOS y CREDENCIALES nunca son nodos (van en sus paneles dataCatalog/credentials).
 - Cada nodo nuevo va DENTRO de la lane correcta (usa el laneId real del "## Detalle del Canvas Actual"). Usa los IDs reales de lanes y nodos existentes que ves en ese detalle.
 - Conecta los nodos nuevos con edges al flujo existente (no dejes nodos huerfanos). Una decision debe tener al menos dos edges conditional salientes con label y condition; un result es terminal; el grafo es aciclico.
+- Agrega el nodo nuevo y sus edges en la MISMA llamada EditCanvasNodesFn. Los source/target de cada edge deben ser ids de nodos que YA existen en el "## Detalle del Canvas Actual" O el id del nodo que estas agregando en esta misma llamada — NUNCA un id inventado ni un nodo que no exista.
 - Al llamar EditCanvasNodesFn, cada nodo debe llevar un kind valido (action/decision/trigger/result) y el laneId de su lane.
 - Forma exacta a imitar para un nodo nuevo:
   {"id":"node_action_solicitar_autorizacion_ceo","kind":"action","laneId":"<laneId real del Detalle del Canvas>","title":"Solicitar autorización del CEO","data":{"summary":"Operaciones solicita al CEO autorizar la creación de la cuenta.","responsibleRole":"Operaciones","status":"proposed"}}
