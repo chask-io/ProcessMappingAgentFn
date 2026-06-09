@@ -300,10 +300,25 @@ def _format_canvas_detail(canvas: dict) -> str:
                 lines.append(f"- {node}")
                 continue
             node_id = node.get("id") or node.get("uuid") or "sin-id"
-            label = node.get("label") or node.get("title") or node.get("name") or node_id
+            data = node.get("data", {}) if isinstance(node.get("data"), dict) else {}
+            label = (
+                node.get("label")
+                or node.get("title")
+                or node.get("name")
+                or data.get("label")
+                or data.get("title")
+                or data.get("name")
+                or node_id
+            )
             node_type = node.get("type") or node.get("kind") or node.get("nodeType") or "node"
             lane_id = node.get("laneId") or node.get("lane_id") or node.get("parentId") or ""
-            summary = node.get("summary") or node.get("description") or node.get("data", {}).get("description") or ""
+            summary = (
+                node.get("summary")
+                or node.get("description")
+                or data.get("description")
+                or data.get("summary")
+                or ""
+            )
             line = f"- {node_id}: [{node_type}] {label}"
             if lane_id:
                 line += f" | lane: {lane_id}"
@@ -344,6 +359,7 @@ def _format_canvas_detail(canvas: dict) -> str:
 
     if len(lines) == 1:
         return ""
+    logger.info("Canvas detail formatted: %d nodes, %d edges", len(nodes), len(edges))
     return "\n".join(lines)
 
 
