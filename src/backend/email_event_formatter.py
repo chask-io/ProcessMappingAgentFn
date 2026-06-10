@@ -90,7 +90,7 @@ class EmailEventFormatter:
         "analyst_response": "_handle_tool_response",
         "function_call_async_error": "_handle_tool_error",
         "received_email": "_handle_email_message",
-        "email_to_user": "_handle_regular_message",
+        "email_to_user": "_handle_email_message",
         "need_agent_email": "_handle_regular_message",
         "notify_email": "_handle_regular_message",
         "message_to_agent": "_handle_regular_message",
@@ -148,21 +148,17 @@ class EmailEventFormatter:
             if event_type == "execute_plan" and evt.get("prompt", "") in _SKIP_PROMPTS:
                 continue
 
-            # Skip email_to_user events that came from a tool call — the agent
-            # already sees these via the function_call/function_call_response pair.
-            # Their prompt field contains reasoning text (not the email body),
-            # which confuses the LLM when rendered as a bare assistant message.
-            if event_type == "email_to_user":
-                etu_extra = evt.get("extra_params") or {}
-                if etu_extra.get("tool_call_id"):
-                    continue
-
             # Content-based dedup: skip events with same type+prompt.
             # Tool events use call_id instead of prompt as dedup key,
             # since different calls may share the same prompt text but
             # must each register in look_ahead for response matching.
             if event_type not in _TOOL_EVENT_TYPES:
-                content_key = (event_type, evt.get("prompt", ""))
+                if event_type == "email_to_user":
+                    extra = evt.get("extra_params") or {}
+                    content = extra.get("body") or evt.get("prompt", "")
+                    content_key = (event_type, content)
+                else:
+                    content_key = (event_type, evt.get("prompt", ""))
             else:
                 extra = evt.get("extra_params") or {}
                 call_id = extra.get("tool_call_id") or extra.get("id")
@@ -461,7 +457,7 @@ class EmailEventFormatter:
             idx, ch_type = channel_map[ch_id]
             prefix = f"{prefix} [{idx}: {ch_type}]"
 
-        body = extra.get("body", "")
+        body = extra.get("body") or evt.get("prompt", "")
         if extra.get("attachments"):
             body += f" [incluye {len(extra['attachments'])} archivos adjuntos]"
         content = cls._extract_latest_email_content(body)
@@ -498,9 +494,17 @@ class EmailEventFormatter:
         if call_id not in state["buffered"]:
             return []
         return [
-            cls._format_regular_message(evt, channel_map)
+            cls._format_buffered_event(evt, channel_map)
             for evt in state["buffered"].pop(call_id, [])
         ]
+
+    @classmethod
+    def _format_buffered_event(
+        cls, evt: EventDict, channel_map: ChannelMap,
+    ) -> MessageDict:
+        if evt.get("event_type") == "email_to_user":
+            return cls._format_email_message(evt, channel_map)
+        return cls._format_regular_message(evt, channel_map)
 
     @classmethod
     def _format_regular_message(
@@ -512,9 +516,10 @@ class EmailEventFormatter:
 
         prefix, role = EVENT_PREFIXES.get(event_type, ("[Desconocido]", "system"))
 
-        # Agent responses: no prefix so LLM sees clean examples
+        # Agent responses: no prefix so LLM sees clean examples. EmailAlUsuarioFn
+        # stores the actual email body in extra_params.body; prompt is reasoning.
         if event_type == "email_to_user":
-            return {"role": role, "content": evt.get("prompt", "")}
+            return {"role": role, "content": extra.get("body") or evt.get("prompt", "")}
 
         # Add sender info for received messages
         if event_type in {"received_email", "message_to_agent", "message_to_email_agent"}:
@@ -568,7 +573,7 @@ class EmailEventFormatter:
                     output.append(cls._format_regular_message(call_evt, channel_map))
 
             output.extend(
-                cls._format_regular_message(evt, channel_map)
+                cls._format_buffered_event(evt, channel_map)
                 for evt in state["buffered"].get(call_id, [])
             )
 
