@@ -148,12 +148,17 @@ class EmailEventFormatter:
             if event_type == "execute_plan" and evt.get("prompt", "") in _SKIP_PROMPTS:
                 continue
 
-            # Content-based dedup: skip events with same type+prompt.
+            # Content-based dedup: skip events with same rendered content.
             # Tool events use call_id instead of prompt as dedup key,
             # since different calls may share the same prompt text but
             # must each register in look_ahead for response matching.
             if event_type not in _TOOL_EVENT_TYPES:
-                if event_type == "email_to_user":
+                if event_type == "received_email":
+                    extra = evt.get("extra_params") or {}
+                    body = extra.get("body") or evt.get("prompt", "")
+                    content = cls._extract_latest_email_content(body)
+                    content_key = (event_type, content)
+                elif event_type == "email_to_user":
                     extra = evt.get("extra_params") or {}
                     content = extra.get("body") or evt.get("prompt", "")
                     content_key = (event_type, content)

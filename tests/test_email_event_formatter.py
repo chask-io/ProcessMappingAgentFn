@@ -125,3 +125,80 @@ def test_terminal_email_body_renders_without_dangling_tool_call():
             continue
         assert index + 1 < len(messages)
         assert messages[index + 1]["role"] == "tool"
+
+
+def test_received_email_same_prompt_distinct_bodies_are_not_deduped():
+    formatter = _load_formatter_module()
+    generic_prompt = "New email received with subject: Re: Mapeo de proceso"
+    events = [
+        {
+            "uuid": "event-slack",
+            "created_at": "2026-06-10T10:00:00Z",
+            "event_type": "received_email",
+            "prompt": generic_prompt,
+            "extra_params": {
+                "body": "Cuando Operaciones aprueba el pedido, notificamos por Slack.",
+                "sender_email": "leo@chask.io",
+            },
+        },
+        {
+            "uuid": "event-calendar",
+            "created_at": "2026-06-10T10:01:00Z",
+            "event_type": "received_email",
+            "prompt": generic_prompt,
+            "extra_params": {
+                "body": "Antes de iniciar, agendamos el kickoff en Google Calendar.",
+                "sender_email": "leo@chask.io",
+            },
+        },
+    ]
+
+    messages = formatter.EmailEventFormatter.format_events(
+        events,
+        enabled_events=formatter.EMAIL_DEFAULT_EVENTS,
+    )
+
+    received_messages = [
+        msg for msg in messages if msg["role"] == "user" and "[Email recibido]" in msg["content"]
+    ]
+    assert len(received_messages) == 2
+    assert "Slack" in received_messages[0]["content"]
+    assert "Google Calendar" in received_messages[1]["content"]
+
+
+def test_received_email_same_prompt_identical_body_is_deduped():
+    formatter = _load_formatter_module()
+    generic_prompt = "New email received with subject: Re: Mapeo de proceso"
+    events = [
+        {
+            "uuid": "event-slack-original",
+            "created_at": "2026-06-10T10:00:00Z",
+            "event_type": "received_email",
+            "prompt": generic_prompt,
+            "extra_params": {
+                "body": "Cuando Operaciones aprueba el pedido, notificamos por Slack.",
+                "sender_email": "leo@chask.io",
+            },
+        },
+        {
+            "uuid": "event-slack-redelivery",
+            "created_at": "2026-06-10T10:01:00Z",
+            "event_type": "received_email",
+            "prompt": generic_prompt,
+            "extra_params": {
+                "body": "Cuando Operaciones aprueba el pedido, notificamos por Slack.",
+                "sender_email": "leo@chask.io",
+            },
+        },
+    ]
+
+    messages = formatter.EmailEventFormatter.format_events(
+        events,
+        enabled_events=formatter.EMAIL_DEFAULT_EVENTS,
+    )
+
+    received_messages = [
+        msg for msg in messages if msg["role"] == "user" and "[Email recibido]" in msg["content"]
+    ]
+    assert len(received_messages) == 1
+    assert "Slack" in received_messages[0]["content"]
