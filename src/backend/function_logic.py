@@ -874,7 +874,7 @@ class FunctionBackend(AgentFunctionBackend):
         openai_api_key: str,
         model: str,
     ):
-        model = model or "gpt-5.1-2025-11-13"
+        model = "gpt-5.5"
         super().__init__(
             config=PROCESS_MAPPING_CONFIG,
             orchestration_event=orchestration_event,
