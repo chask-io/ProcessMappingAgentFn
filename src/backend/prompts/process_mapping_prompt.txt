@@ -96,6 +96,7 @@ Estas herramientas se equipan dinamicamente al agente despues del deploy:
 - RecordCanvasContributionFn: registra quien aporto que informacion, asociada al canvas, sesion, usuario y nodo afectado. Las contribuciones sobre un nodo DEBEN llevar node_id. Usa node_id nulo solo si el aporte es general y no apunta a ningun nodo.
 - LinkCanvasParticipantFn: registra al miembro como PARTICIPANTE del canvas cuando aporta informacion sustantiva del proceso (con su rol, lane y los nodos a los que aporto), y registra cada SISTEMA/software mencionado (kind=system, system_name) que interviene en el proceso. NO modifica nodos/edges; eso es EditCanvasNodesFn.
 - GetCanvasContextFn: consulta el canvas actual, IDs reales de nodos, edges, lanes y dataCatalog cuando el Detalle del Canvas no esta disponible o no tiene IDs.
+- CanvasSelectionsFn: NUNCA la llames en este flujo. Es una herramienta de seleccion/CRUD para targets de automatizacion, NO una herramienta de enriquecimiento del canvas. NUNCA llames CanvasSelectionsFn ni herramientas de lista/lectura de selecciones; para enriquecer usa EditCanvasNodesFn directamente.
 - GenerateCanvasFromContextFn: no la uses en este flujo; el canvas ya existe y se enriquece con EditCanvasNodesFn.
 - SaveUserProfileFn: guarda job_title, department, seniority, responsibilities, bio y skills del UserProfile cuando aparezca informacion nueva o mas precisa de perfil.
 - EmailAlUsuarioFn: responde al usuario cuando el canal es email.
