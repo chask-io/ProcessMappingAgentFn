@@ -50,6 +50,17 @@ PIPELINE_COLLECTION_REMINDER = (
 
 MAX_FILE_CONTENT_CHARS = 3000
 TEXT_MIME_PREFIXES = ("text/", "application/json", "application/xml")
+AGENT_TURN_TRIGGER_EVENTS = {
+    "canvas_designer_request",
+    "received_email",
+    "received_whatsapp_message",
+    "message_to_agent",
+    "message_to_email_agent",
+    "message_to_whatsapp_agent",
+    "notify_email",
+    "notify_whatsapp",
+    "user_authenticated",
+}
 
 # Module-level singleton; built once per container when BASE_DOMAIN is resolved.
 _users_api_manager = None
@@ -272,6 +283,56 @@ def _build_canvas_context(oe: OrchestrationEvent) -> str | None:
             lines.append(f"Nodos: {nodes}, Conexiones: {edges}")
 
     return "\n".join(lines)
+
+
+def _resolve_canvas_uuid_for_version_context(oe: OrchestrationEvent) -> str | None:
+    """Resolve the active canvas UUID without fetching canvas state."""
+    design_context = (oe.extra_params or {}).get("design_context", {}) or {}
+    canvas_uuid = design_context.get("canvas_uuid")
+    project_uuid = design_context.get("project_uuid")
+    if not canvas_uuid or not project_uuid:
+        recovered = _recover_design_context_from_session(oe)
+        canvas_uuid = canvas_uuid or recovered.get("canvas_uuid")
+        project_uuid = project_uuid or recovered.get("project_uuid")
+    if canvas_uuid:
+        return str(canvas_uuid)
+
+    canvases = _fetch_canvases(oe, project_uuid)
+    if canvases:
+        fallback_uuid = canvases[0].get("uuid")
+        if fallback_uuid:
+            return str(fallback_uuid)
+    return None
+
+
+def _build_current_canvas_version_context(oe: OrchestrationEvent) -> str | None:
+    """Fetch the API-authored current-version metadata system message."""
+    canvas_uuid = _resolve_canvas_uuid_for_version_context(oe)
+    if not canvas_uuid:
+        logger.info("Skipping canvas version context: no canvas_uuid resolved")
+        return None
+
+    try:
+        from api.canvas_requests import canvas_api_manager
+
+        response = canvas_api_manager.call(
+            "get_current_canvas_version_context",
+            canvas_uuid=canvas_uuid,
+            **_get_api_credentials(oe),
+        )
+        if not _check_api_response(response, "get_current_canvas_version_context"):
+            return None
+        if response.get("version") is None:
+            logger.info("Skipping canvas version context: canvas %s has no version", canvas_uuid)
+            return None
+        context = response.get("context")
+        if not context:
+            logger.info("Skipping canvas version context: empty API context for %s", canvas_uuid)
+            return None
+        return str(context)
+    except Exception as e:
+        logger.warning("Failed to fetch current canvas version context: %s", e)
+        return None
 
 
 def _fetch_canvas_detail(oe: OrchestrationEvent, canvas_uuid: str) -> dict | None:
@@ -691,6 +752,64 @@ class _ProcessMappingAgentWrapper(AgentWrapper):
     - Inject special event messages for user_authenticated / notify_* events
     """
 
+    @staticmethod
+    def _event_uuid(event: Dict[str, Any]) -> str | None:
+        value = event.get("event_id") or event.get("uuid")
+        return str(value) if value else None
+
+    @staticmethod
+    def _agent_turn_uuid_from_extra(extra: Dict[str, Any]) -> str | None:
+        value = extra.get("agent_turn_uuid")
+        if value:
+            return str(value)
+        tool_calls = extra.get("tool_calls") or []
+        for tool_call in tool_calls:
+            args = tool_call.get("args") or {}
+            value = args.get("agent_turn_uuid")
+            if value:
+                return str(value)
+        return None
+
+    def _resolve_stable_agent_turn_uuid(self) -> str:
+        """Return the original trigger UUID for this agent turn/tool chain."""
+        current_extra = self.orchestration_event.extra_params or {}
+        explicit = self._agent_turn_uuid_from_extra(current_extra)
+        if explicit:
+            return explicit
+
+        events = getattr(self, "_raw_events", []) or []
+        current_event_id = str(self.orchestration_event.event_id)
+        ordered = sorted(events, key=lambda ev: ev.get("created_at", ""))
+        current_index = next(
+            (
+                idx for idx, event in enumerate(ordered)
+                if self._event_uuid(event) == current_event_id
+            ),
+            None,
+        )
+        relevant = ordered[: current_index + 1] if current_index is not None else ordered
+
+        for event in reversed(relevant):
+            explicit = self._agent_turn_uuid_from_extra(event.get("extra_params") or {})
+            if explicit:
+                return explicit
+
+        for event in reversed(relevant):
+            if event.get("event_type") in AGENT_TURN_TRIGGER_EVENTS:
+                event_uuid = self._event_uuid(event)
+                if event_uuid:
+                    return event_uuid
+
+        return current_event_id
+
+    def _invoke_tool(self, tool_call: Dict[str, Any]) -> None:
+        args = tool_call.get("args")
+        if not isinstance(args, dict):
+            args = {}
+            tool_call["args"] = args
+        args.setdefault("agent_turn_uuid", self._resolve_stable_agent_turn_uuid())
+        super()._invoke_tool(tool_call)
+
     def _build_system_prompt(self) -> str:
         """Build system prompt, applying template variables to socket context.
 
@@ -791,6 +910,11 @@ class _ProcessMappingAgentWrapper(AgentWrapper):
         if user_profile_context:
             logger.info("Appending user profile context system message (%d chars)", len(user_profile_context))
             messages.append({"role": "system", "content": user_profile_context})
+
+        version_context = _build_current_canvas_version_context(self.orchestration_event)
+        if version_context:
+            logger.info("Appending current canvas version system message (%d chars)", len(version_context))
+            messages.append({"role": "system", "content": version_context})
 
         return messages
 
