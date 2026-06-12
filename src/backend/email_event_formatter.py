@@ -27,6 +27,7 @@ HandlerFunc = Callable[[EventDict, ChannelMap, Dict], Optional[List[MessageDict]
 
 EMAIL_DEFAULT_EVENTS: Set[str] = {
     "received_email",
+    "canvas_designer_request",
     "email_to_user",
     "need_agent_email",
     "notify_email",
@@ -44,6 +45,7 @@ EMAIL_DEFAULT_EVENTS: Set[str] = {
 EVENT_PREFIXES: Dict[str, Tuple[str, str]] = {
     # (prefix, role)
     "received_email": ("[Email recibido]", "user"),
+    "canvas_designer_request": ("[Mensaje canvas]", "user"),
     "email_to_user": ("[Email enviado]", "assistant"),
     "need_agent_email": ("[Solicitud agente email]", "user"),
     "notify_email": ("[Notificación email]", "system"),
@@ -64,6 +66,7 @@ _SKIP_PROMPTS = frozenset({
 
 EVENT_SPEAKER_NAMES: Dict[str, str] = {
     "received_email": "email_user",
+    "canvas_designer_request": "canvas_user",
     "message_to_agent": "operator",
     "message_to_email_agent": "operator",
 }
@@ -90,6 +93,7 @@ class EmailEventFormatter:
         "analyst_response": "_handle_tool_response",
         "function_call_async_error": "_handle_tool_error",
         "received_email": "_handle_email_message",
+        "canvas_designer_request": "_handle_canvas_message",
         "email_to_user": "_handle_email_message",
         "need_agent_email": "_handle_regular_message",
         "notify_email": "_handle_regular_message",
@@ -158,6 +162,8 @@ class EmailEventFormatter:
                     body = extra.get("body") or evt.get("prompt", "")
                     content = cls._extract_latest_email_content(body)
                     content_key = (event_type, content)
+                elif event_type == "canvas_designer_request":
+                    content_key = (event_type, evt.get("prompt", ""))
                 elif event_type == "email_to_user":
                     extra = evt.get("extra_params") or {}
                     content = extra.get("body") or evt.get("prompt", "")
@@ -445,6 +451,48 @@ class EmailEventFormatter:
         return [cls._format_email_message(evt, channel_map)]
 
     @classmethod
+    def _handle_canvas_message(
+        cls, evt: EventDict, channel_map: ChannelMap, state: Dict,
+    ) -> List[MessageDict]:
+        """Handle member messages sent from the canvas conversation."""
+        if state["look_ahead"]:
+            latest_id = list(state["look_ahead"].keys())[-1]
+            state["buffered"].setdefault(latest_id, []).append(evt)
+            return []
+
+        return [cls._format_canvas_message(evt, channel_map)]
+
+    @classmethod
+    def _format_canvas_message(cls, evt: EventDict, channel_map: ChannelMap) -> MessageDict:
+        """Format a canvas_designer_request into a user message.
+
+        chask_api prepends the sender identity to the prompt, e.g.
+        "[Name <email>]: content", so the prompt is the authoritative text.
+        """
+        extra = evt.get("extra_params") or {}
+        prefix, role = EVENT_PREFIXES["canvas_designer_request"]
+
+        sender = extra.get("sender") or {}
+        if isinstance(sender, dict):
+            sender_name = sender.get("name", "")
+            sender_email = sender.get("email", "")
+            if sender_name or sender_email:
+                contact_info = f"{sender_name} <{sender_email}>" if sender_email else sender_name
+                prefix = f"{prefix} {contact_info}"
+
+        ch_id = evt.get("channel_id")
+        if channel_map and ch_id in channel_map:
+            idx, ch_type = channel_map[ch_id]
+            prefix = f"{prefix} [{idx}: {ch_type}]"
+
+        msg: MessageDict = {
+            "role": role,
+            "content": f"{prefix} {evt.get('prompt', '')}\n---",
+            "name": EVENT_SPEAKER_NAMES["canvas_designer_request"],
+        }
+        return msg
+
+    @classmethod
     def _format_email_message(cls, evt: EventDict, channel_map: ChannelMap) -> MessageDict:
         """Format an email event into a message dict."""
         extra = evt.get("extra_params") or {}
@@ -509,6 +557,8 @@ class EmailEventFormatter:
     ) -> MessageDict:
         if evt.get("event_type") == "email_to_user":
             return cls._format_email_message(evt, channel_map)
+        if evt.get("event_type") == "canvas_designer_request":
+            return cls._format_canvas_message(evt, channel_map)
         return cls._format_regular_message(evt, channel_map)
 
     @classmethod
