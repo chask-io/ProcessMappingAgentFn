@@ -163,7 +163,12 @@ class EmailEventFormatter:
                     content = cls._extract_latest_email_content(body)
                     content_key = (event_type, content)
                 elif event_type == "canvas_designer_request":
-                    content_key = (event_type, evt.get("prompt", ""))
+                    extra = evt.get("extra_params") or {}
+                    content_key = (
+                        event_type,
+                        evt.get("prompt", ""),
+                        cls._canvas_sender_dedup_key(extra),
+                    )
                 elif event_type == "email_to_user":
                     extra = evt.get("extra_params") or {}
                     content = extra.get("body") or evt.get("prompt", "")
@@ -466,10 +471,12 @@ class EmailEventFormatter:
     def _format_canvas_message(cls, evt: EventDict, channel_map: ChannelMap) -> MessageDict:
         """Format a canvas_designer_request into a user message.
 
-        chask_api prepends the sender identity to the prompt, e.g.
-        "[Name <email>]: content", so the prompt is the authoritative text.
+        chask_api sends the raw member text in prompt and structured sender
+        identity in extra_params.sender. Keep the message body raw while
+        surfacing sender context separately for multi-sender conversations.
         """
         prefix, role = EVENT_PREFIXES["canvas_designer_request"]
+        extra = evt.get("extra_params") or {}
 
         content = evt.get("prompt", "")
         ch_id = evt.get("channel_id")
@@ -477,9 +484,15 @@ class EmailEventFormatter:
             idx, ch_type = channel_map[ch_id]
             prefix = f"{prefix} [{idx}: {ch_type}]"
 
+        sender_context = cls._format_canvas_sender_context(extra)
+        if sender_context:
+            rendered_content = f"{prefix}\n{sender_context}\nMensaje:\n{content}\n---"
+        else:
+            rendered_content = f"{prefix} {content}\n---"
+
         msg: MessageDict = {
             "role": role,
-            "content": f"{prefix} {content}\n---",
+            "content": rendered_content,
             "name": EVENT_SPEAKER_NAMES["canvas_designer_request"],
         }
         return msg
@@ -516,6 +529,33 @@ class EmailEventFormatter:
     # =========================================================================
     # HELPERS
     # =========================================================================
+
+    @classmethod
+    def _canvas_sender_dedup_key(cls, extra: Dict[str, Any]) -> Tuple[str, str, str]:
+        sender = extra.get("sender") if isinstance(extra.get("sender"), dict) else {}
+        sender_uuid = str(extra.get("sender_organization_customer_uuid") or "").strip()
+        sender_name = str(sender.get("name") or "").strip()
+        sender_email = str(sender.get("email") or "").strip().lower()
+        return sender_uuid, sender_name, sender_email
+
+    @classmethod
+    def _format_canvas_sender_context(cls, extra: Dict[str, Any]) -> str:
+        sender = extra.get("sender") if isinstance(extra.get("sender"), dict) else {}
+        sender_name = str(sender.get("name") or "").strip()
+        sender_email = str(sender.get("email") or "").strip()
+        sender_uuid = str(extra.get("sender_organization_customer_uuid") or "").strip()
+
+        if sender_name and sender_email:
+            sender_label = f"{sender_name} <{sender_email}>"
+        else:
+            sender_label = sender_name or sender_email
+
+        parts = []
+        if sender_label:
+            parts.append(f"Remitente canvas: {sender_label}")
+        if sender_uuid:
+            parts.append(f"sender_organization_customer_uuid: {sender_uuid}")
+        return "\n".join(parts)
 
     @classmethod
     def _match_tool_call(cls, call_id: Optional[str], state: Dict) -> Optional[str]:
