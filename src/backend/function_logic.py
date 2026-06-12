@@ -9,6 +9,7 @@ profile context for member interviews.
 import json
 import logging
 import os
+from urllib.parse import urlencode
 from typing import Any, Dict, List
 
 from chask_foundation.backend.agent_wrapper import (
@@ -315,13 +316,29 @@ def _build_current_canvas_version_context(oe: OrchestrationEvent) -> str | None:
     try:
         from api.canvas_requests import canvas_api_manager
 
-        response = canvas_api_manager.call(
-            "get_current_canvas_version_context",
-            canvas_uuid=canvas_uuid,
-            **_get_api_credentials(oe),
+        # TODO: switch back to canvas_api_manager.call once the deployed foundation
+        # layer registers get_current_canvas_version_context.
+        url = (
+            f"{canvas_api_manager.base_url}/get-current-canvas-version-context?"
+            f"{urlencode({'canvas_uuid': canvas_uuid})}"
         )
-        if not _check_api_response(response, "get_current_canvas_version_context"):
+        headers = {
+            "Authorization": f"Bearer {oe.access_token}",
+            "Organization-ID": str(oe.organization.organization_id),
+        }
+        api_response = canvas_api_manager.session.request(
+            "GET",
+            url,
+            headers=headers,
+        )
+        if api_response.status_code not in (200, 201):
+            logger.warning(
+                "API error for get_current_canvas_version_context: status=%s body=%s",
+                api_response.status_code,
+                getattr(api_response, "text", ""),
+            )
             return None
+        response = api_response.json()
         if response.get("version") is None:
             logger.info("Skipping canvas version context: canvas %s has no version", canvas_uuid)
             return None
@@ -914,6 +931,10 @@ class _ProcessMappingAgentWrapper(AgentWrapper):
         version_context = _build_current_canvas_version_context(self.orchestration_event)
         if version_context:
             logger.info("Appending current canvas version system message (%d chars)", len(version_context))
+            logger.info(
+                "Current Canvas Version prompt metadata: %s",
+                version_context.replace("\n", " ")[:500],
+            )
             messages.append({"role": "system", "content": version_context})
 
         return messages

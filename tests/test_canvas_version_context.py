@@ -36,15 +36,18 @@ def _install_layer_stubs():
     api = types.ModuleType("api")
     orchestrator_requests = types.ModuleType("api.orchestrator_requests")
     internal_whatsapp_requests = types.ModuleType("api.internal_whatsapp_requests")
+    canvas_requests = types.ModuleType("api.canvas_requests")
     orchestrator_requests.orchestrator_api_manager = types.SimpleNamespace(
         call=lambda *args, **kwargs: {}
     )
     internal_whatsapp_requests.internal_whatsapp_api_manager = types.SimpleNamespace(
         call=lambda *args, **kwargs: {}
     )
+    canvas_requests.canvas_api_manager = types.SimpleNamespace()
     sys.modules["api"] = api
     sys.modules["api.orchestrator_requests"] = orchestrator_requests
     sys.modules["api.internal_whatsapp_requests"] = internal_whatsapp_requests
+    sys.modules["api.canvas_requests"] = canvas_requests
 
 
 def _load_function_logic():
@@ -62,7 +65,39 @@ def _load_function_logic():
 
 def test_current_version_context_is_final_message(monkeypatch):
     module = _load_function_logic()
-    event = types.SimpleNamespace(event_type="received_email")
+    captured = {}
+
+    class Response:
+        status_code = 200
+        text = '{"ok": true}'
+
+        def json(self):
+            return {
+                "version": {"version_number": 7},
+                "context": "## Current Canvas Version\ncurrent_version: v7",
+            }
+
+    def request(method, url, headers):
+        captured["method"] = method
+        captured["url"] = url
+        captured["headers"] = headers
+        return Response()
+
+    sys.modules["api.canvas_requests"].canvas_api_manager = types.SimpleNamespace(
+        base_url="https://app.chask.it/api/v2/canvas",
+        session=types.SimpleNamespace(request=request),
+    )
+    event = types.SimpleNamespace(
+        event_type="received_email",
+        access_token="token-123",
+        organization=types.SimpleNamespace(organization_id="org-123"),
+        extra_params={
+            "design_context": {
+                "canvas_uuid": "canvas-123",
+                "project_uuid": "project-123",
+            }
+        },
+    )
     wrapper = module._ProcessMappingAgentWrapper(
         config=module.PROCESS_MAPPING_CONFIG,
         orchestration_event=event,
@@ -79,11 +114,6 @@ def test_current_version_context_is_final_message(monkeypatch):
     monkeypatch.setattr(wrapper, "_is_collecting_pipeline_data", lambda: False)
     monkeypatch.setattr(module, "_build_canvas_context", lambda oe: "canvas context")
     monkeypatch.setattr(module, "_build_user_profile_context", lambda oe: "profile context")
-    monkeypatch.setattr(
-        module,
-        "_build_current_canvas_version_context",
-        lambda oe: "## Current Canvas Version\ncurrent_version: v7",
-    )
 
     messages = wrapper._prepare_messages()
 
@@ -91,6 +121,10 @@ def test_current_version_context_is_final_message(monkeypatch):
     assert messages[-2] == {"role": "system", "content": "profile context"}
     assert messages[-1]["role"] == "system"
     assert messages[-1]["content"].startswith("## Current Canvas Version")
+    assert captured["method"] == "GET"
+    assert captured["url"].endswith("/get-current-canvas-version-context?canvas_uuid=canvas-123")
+    assert captured["headers"]["Authorization"] == "Bearer token-123"
+    assert captured["headers"]["Organization-ID"] == "org-123"
 
 
 def test_continuation_recovers_original_agent_turn_uuid():
