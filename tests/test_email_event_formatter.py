@@ -233,7 +233,7 @@ def test_canvas_designer_request_uses_prepended_prompt_and_sender():
     assert len(messages) == 1
     assert messages[0]["role"] == "user"
     assert messages[0]["name"] == "canvas_user"
-    assert "[Mensaje canvas] Boss <boss@example.com> [0: canvas]" in messages[0]["content"]
+    assert "[Mensaje canvas] [0: canvas]" in messages[0]["content"]
     assert "[Boss <boss@example.com>]: Aprobamos descuentos" in messages[0]["content"]
 
 

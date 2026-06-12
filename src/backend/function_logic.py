@@ -634,7 +634,6 @@ def _should_inject_operator_reminder(events: List[Dict[str, Any]]) -> bool:
 # =============================================================================
 
 PROCESS_MAPPING_EVENTS = WHATSAPP_DEFAULT_EVENTS | EMAIL_DEFAULT_EVENTS | {
-    "canvas_designer_request",
     "need_agent_whatsapp",
     "user_authenticated",
     "notify_whatsapp",
@@ -725,26 +724,22 @@ class _ProcessMappingAgentWrapper(AgentWrapper):
         all_reply_tools = set().union(*self._REPLY_TOOLS.values())
 
         self.all_dynamic_tools = [
-            tool
-            for tool in self.all_dynamic_tools
-            if tool.__name__ not in all_reply_tools or tool.__name__ in allowed_reply_tools
+            tool for tool in self.all_dynamic_tools
+            if self._is_allowed_tool_name(tool.__name__, allowed_reply_tools, all_reply_tools)
         ]
         self.tool_selection_dict = {
             name: tool
             for name, tool in self.tool_selection_dict.items()
-            if name not in all_reply_tools or name in allowed_reply_tools
+            if self._is_allowed_tool_name(name, allowed_reply_tools, all_reply_tools)
         }
         self.function_schemas = [
             schema
             for schema in self.function_schemas
-            if (
-                schema.get("function", {}).get("name")
-                or schema.get("name")
-            ) not in all_reply_tools
-            or (
-                schema.get("function", {}).get("name")
-                or schema.get("name")
-            ) in allowed_reply_tools
+            if self._is_allowed_tool_name(
+                self._schema_tool_name(schema),
+                allowed_reply_tools,
+                all_reply_tools,
+            )
         ]
         logger.info(
             "Reply tool hard gate applied: channel=%s allowed=%s loaded_tools=%s",
@@ -753,33 +748,47 @@ class _ProcessMappingAgentWrapper(AgentWrapper):
             sorted(self.tool_selection_dict.keys()),
         )
 
+    @staticmethod
+    def _schema_tool_name(schema: Dict[str, Any]) -> str:
+        return schema.get("function", {}).get("name") or schema.get("name") or ""
+
+    @staticmethod
+    def _is_allowed_tool_name(
+        name: str,
+        allowed_reply_tools: set[str],
+        all_reply_tools: set[str],
+    ) -> bool:
+        return name not in all_reply_tools or name in allowed_reply_tools
+
+    def _build_tool_extra_params(self, tool_call: Dict[str, Any]) -> Dict[str, Any]:
+        original_extra = self.orchestration_event.extra_params or {}
+        extra_params = {
+            "tool_calls": [tool_call],
+            "function_uuid": self._get_tool_function_uuid(tool_call.get("name", "")),
+            "tool_call_id": tool_call.get("id", ""),
+            "original_source": self.config.source_name,
+        }
+        for key in (
+            "reply_channel",
+            "conversation_uuid",
+            "sender",
+            "sender_organization_customer_uuid",
+            "invited_organization_customer_uuid",
+            "design_context",
+        ):
+            if key in original_extra:
+                extra_params[key] = original_extra[key]
+
+        if "reply_channel" not in extra_params:
+            extra_params["reply_channel"] = self._resolve_reply_channel()
+
+        return extra_params
+
     def _invoke_tool(self, tool_call: Dict[str, Any]) -> None:
         """Invoke a tool while preserving channel and sender context."""
         try:
             tool_name = tool_call.get("name", "")
-            target_function_uuid = self._get_tool_function_uuid(tool_name)
-            original_extra = self.orchestration_event.extra_params or {}
-
-            extra_params = {
-                "tool_calls": [tool_call],
-                "function_uuid": target_function_uuid,
-                "tool_call_id": tool_call.get("id", ""),
-                "original_source": self.config.source_name,
-            }
-            for key in (
-                "reply_channel",
-                "conversation_uuid",
-                "sender",
-                "sender_organization_customer_uuid",
-                "invited_organization_customer_uuid",
-                "design_context",
-            ):
-                if key in original_extra:
-                    extra_params[key] = original_extra[key]
-
-            if "reply_channel" not in extra_params:
-                extra_params["reply_channel"] = self._resolve_reply_channel()
-
+            extra_params = self._build_tool_extra_params(tool_call)
             evolved_uuid = self._evolve_to_function_call(orchestrator_api_manager, extra_params)
             function_call_event = self._build_function_call_event(evolved_uuid, extra_params)
             self._forward_to_kafka(orchestrator_api_manager, function_call_event)

@@ -469,17 +469,9 @@ class EmailEventFormatter:
         chask_api prepends the sender identity to the prompt, e.g.
         "[Name <email>]: content", so the prompt is the authoritative text.
         """
-        extra = evt.get("extra_params") or {}
         prefix, role = EVENT_PREFIXES["canvas_designer_request"]
 
-        sender = extra.get("sender") or {}
-        if isinstance(sender, dict):
-            sender_name = sender.get("name", "")
-            sender_email = sender.get("email", "")
-            if sender_name or sender_email:
-                contact_info = f"{sender_name} <{sender_email}>" if sender_email else sender_name
-                prefix = f"{prefix} {contact_info}"
-
+        content = evt.get("prompt", "")
         ch_id = evt.get("channel_id")
         if channel_map and ch_id in channel_map:
             idx, ch_type = channel_map[ch_id]
@@ -487,7 +479,7 @@ class EmailEventFormatter:
 
         msg: MessageDict = {
             "role": role,
-            "content": f"{prefix} {evt.get('prompt', '')}\n---",
+            "content": f"{prefix} {content}\n---",
             "name": EVENT_SPEAKER_NAMES["canvas_designer_request"],
         }
         return msg
