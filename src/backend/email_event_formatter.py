@@ -27,6 +27,7 @@ HandlerFunc = Callable[[EventDict, ChannelMap, Dict], Optional[List[MessageDict]
 
 EMAIL_DEFAULT_EVENTS: Set[str] = {
     "received_email",
+    "canvas_designer_request",
     "email_to_user",
     "need_agent_email",
     "notify_email",
@@ -44,6 +45,7 @@ EMAIL_DEFAULT_EVENTS: Set[str] = {
 EVENT_PREFIXES: Dict[str, Tuple[str, str]] = {
     # (prefix, role)
     "received_email": ("[Email recibido]", "user"),
+    "canvas_designer_request": ("[Mensaje canvas]", "user"),
     "email_to_user": ("[Email enviado]", "assistant"),
     "need_agent_email": ("[Solicitud agente email]", "user"),
     "notify_email": ("[Notificación email]", "system"),
@@ -64,6 +66,7 @@ _SKIP_PROMPTS = frozenset({
 
 EVENT_SPEAKER_NAMES: Dict[str, str] = {
     "received_email": "email_user",
+    "canvas_designer_request": "canvas_user",
     "message_to_agent": "operator",
     "message_to_email_agent": "operator",
 }
@@ -90,6 +93,7 @@ class EmailEventFormatter:
         "analyst_response": "_handle_tool_response",
         "function_call_async_error": "_handle_tool_error",
         "received_email": "_handle_email_message",
+        "canvas_designer_request": "_handle_canvas_message",
         "email_to_user": "_handle_email_message",
         "need_agent_email": "_handle_regular_message",
         "notify_email": "_handle_regular_message",
@@ -158,6 +162,13 @@ class EmailEventFormatter:
                     body = extra.get("body") or evt.get("prompt", "")
                     content = cls._extract_latest_email_content(body)
                     content_key = (event_type, content)
+                elif event_type == "canvas_designer_request":
+                    extra = evt.get("extra_params") or {}
+                    content_key = (
+                        event_type,
+                        evt.get("prompt", ""),
+                        cls._canvas_sender_dedup_key(extra),
+                    )
                 elif event_type == "email_to_user":
                     extra = evt.get("extra_params") or {}
                     content = extra.get("body") or evt.get("prompt", "")
@@ -445,6 +456,48 @@ class EmailEventFormatter:
         return [cls._format_email_message(evt, channel_map)]
 
     @classmethod
+    def _handle_canvas_message(
+        cls, evt: EventDict, channel_map: ChannelMap, state: Dict,
+    ) -> List[MessageDict]:
+        """Handle member messages sent from the canvas conversation."""
+        if state["look_ahead"]:
+            latest_id = list(state["look_ahead"].keys())[-1]
+            state["buffered"].setdefault(latest_id, []).append(evt)
+            return []
+
+        return [cls._format_canvas_message(evt, channel_map)]
+
+    @classmethod
+    def _format_canvas_message(cls, evt: EventDict, channel_map: ChannelMap) -> MessageDict:
+        """Format a canvas_designer_request into a user message.
+
+        chask_api sends the raw member text in prompt and structured sender
+        identity in extra_params.sender. Keep the message body raw while
+        surfacing sender context separately for multi-sender conversations.
+        """
+        prefix, role = EVENT_PREFIXES["canvas_designer_request"]
+        extra = evt.get("extra_params") or {}
+
+        content = evt.get("prompt", "")
+        ch_id = evt.get("channel_id")
+        if channel_map and ch_id in channel_map:
+            idx, ch_type = channel_map[ch_id]
+            prefix = f"{prefix} [{idx}: {ch_type}]"
+
+        sender_context = cls._format_canvas_sender_context(extra)
+        if sender_context:
+            rendered_content = f"{prefix}\n{sender_context}\nMensaje:\n{content}\n---"
+        else:
+            rendered_content = f"{prefix} {content}\n---"
+
+        msg: MessageDict = {
+            "role": role,
+            "content": rendered_content,
+            "name": EVENT_SPEAKER_NAMES["canvas_designer_request"],
+        }
+        return msg
+
+    @classmethod
     def _format_email_message(cls, evt: EventDict, channel_map: ChannelMap) -> MessageDict:
         """Format an email event into a message dict."""
         extra = evt.get("extra_params") or {}
@@ -478,6 +531,33 @@ class EmailEventFormatter:
     # =========================================================================
 
     @classmethod
+    def _canvas_sender_dedup_key(cls, extra: Dict[str, Any]) -> Tuple[str, str, str]:
+        sender = extra.get("sender") if isinstance(extra.get("sender"), dict) else {}
+        sender_uuid = str(extra.get("sender_organization_customer_uuid") or "").strip()
+        sender_name = str(sender.get("name") or "").strip()
+        sender_email = str(sender.get("email") or "").strip().lower()
+        return sender_uuid, sender_name, sender_email
+
+    @classmethod
+    def _format_canvas_sender_context(cls, extra: Dict[str, Any]) -> str:
+        sender = extra.get("sender") if isinstance(extra.get("sender"), dict) else {}
+        sender_name = str(sender.get("name") or "").strip()
+        sender_email = str(sender.get("email") or "").strip()
+        sender_uuid = str(extra.get("sender_organization_customer_uuid") or "").strip()
+
+        if sender_name and sender_email:
+            sender_label = f"{sender_name} <{sender_email}>"
+        else:
+            sender_label = sender_name or sender_email
+
+        parts = []
+        if sender_label:
+            parts.append(f"Remitente canvas: {sender_label}")
+        if sender_uuid:
+            parts.append(f"sender_organization_customer_uuid: {sender_uuid}")
+        return "\n".join(parts)
+
+    @classmethod
     def _match_tool_call(cls, call_id: Optional[str], state: Dict) -> Optional[str]:
         """Match a tool response to a pending call by ID or FIFO."""
         if call_id:
@@ -509,6 +589,8 @@ class EmailEventFormatter:
     ) -> MessageDict:
         if evt.get("event_type") == "email_to_user":
             return cls._format_email_message(evt, channel_map)
+        if evt.get("event_type") == "canvas_designer_request":
+            return cls._format_canvas_message(evt, channel_map)
         return cls._format_regular_message(evt, channel_map)
 
     @classmethod
