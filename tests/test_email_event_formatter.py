@@ -202,3 +202,90 @@ def test_received_email_same_prompt_identical_body_is_deduped():
     ]
     assert len(received_messages) == 1
     assert "Slack" in received_messages[0]["content"]
+
+
+def test_canvas_designer_request_surfaces_structured_sender_context():
+    formatter = _load_formatter_module()
+    events = [
+        {
+            "uuid": "event-canvas",
+            "created_at": "2026-06-12T10:00:00Z",
+            "event_type": "canvas_designer_request",
+            "prompt": "Aprobamos descuentos sobre 10% en Slack.",
+            "channel_id": "conversation-1",
+            "extra_params": {
+                "reply_channel": "canvas",
+                "sender": {
+                    "name": "Boss",
+                    "email": "boss@example.com",
+                },
+                "sender_organization_customer_uuid": "customer-boss",
+            },
+        },
+    ]
+
+    messages = formatter.EmailEventFormatter.format_events(
+        events,
+        channel_map={"conversation-1": (0, "canvas")},
+        enabled_events=formatter.EMAIL_DEFAULT_EVENTS,
+    )
+
+    assert len(messages) == 1
+    assert messages[0]["role"] == "user"
+    assert messages[0]["name"] == "canvas_user"
+    assert "[Mensaje canvas] [0: canvas]" in messages[0]["content"]
+    assert "Remitente canvas: Boss <boss@example.com>" in messages[0]["content"]
+    assert "sender_organization_customer_uuid: customer-boss" in messages[0]["content"]
+    assert "Mensaje:\nAprobamos descuentos" in messages[0]["content"]
+    assert "[Boss <boss@example.com>]: Aprobamos" not in messages[0]["content"]
+
+
+def test_canvas_designer_request_dedupes_on_prompt_and_sender_identity():
+    formatter = _load_formatter_module()
+    events = [
+        {
+            "uuid": "event-canvas-1",
+            "created_at": "2026-06-12T10:00:00Z",
+            "event_type": "canvas_designer_request",
+            "prompt": "Usamos HubSpot.",
+            "extra_params": {
+                "reply_channel": "canvas",
+                "sender": {"name": "Ana", "email": "ana@example.com"},
+                "sender_organization_customer_uuid": "customer-ana",
+            },
+        },
+        {
+            "uuid": "event-canvas-2",
+            "created_at": "2026-06-12T10:01:00Z",
+            "event_type": "canvas_designer_request",
+            "prompt": "Usamos HubSpot.",
+            "extra_params": {
+                "reply_channel": "canvas",
+                "sender": {"name": "Ana", "email": "ana@example.com"},
+                "sender_organization_customer_uuid": "customer-ana",
+            },
+        },
+        {
+            "uuid": "event-canvas-3",
+            "created_at": "2026-06-12T10:02:00Z",
+            "event_type": "canvas_designer_request",
+            "prompt": "Usamos HubSpot.",
+            "extra_params": {
+                "reply_channel": "canvas",
+                "sender": {"name": "Boss", "email": "boss@example.com"},
+                "sender_organization_customer_uuid": "customer-boss",
+            },
+        },
+    ]
+
+    messages = formatter.EmailEventFormatter.format_events(
+        events,
+        enabled_events=formatter.EMAIL_DEFAULT_EVENTS,
+    )
+
+    canvas_messages = [
+        msg for msg in messages if msg["role"] == "user" and "[Mensaje canvas]" in msg["content"]
+    ]
+    assert len(canvas_messages) == 2
+    assert "Remitente canvas: Ana <ana@example.com>" in canvas_messages[0]["content"]
+    assert "Remitente canvas: Boss <boss@example.com>" in canvas_messages[1]["content"]

@@ -9,6 +9,7 @@ profile context for member interviews.
 import json
 import logging
 import os
+from urllib.parse import urlencode
 from typing import Any, Dict, List
 
 from chask_foundation.backend.agent_wrapper import (
@@ -50,6 +51,17 @@ PIPELINE_COLLECTION_REMINDER = (
 
 MAX_FILE_CONTENT_CHARS = 3000
 TEXT_MIME_PREFIXES = ("text/", "application/json", "application/xml")
+AGENT_TURN_TRIGGER_EVENTS = {
+    "canvas_designer_request",
+    "received_email",
+    "received_whatsapp_message",
+    "message_to_agent",
+    "message_to_email_agent",
+    "message_to_whatsapp_agent",
+    "notify_email",
+    "notify_whatsapp",
+    "user_authenticated",
+}
 
 # Module-level singleton; built once per container when BASE_DOMAIN is resolved.
 _users_api_manager = None
@@ -272,6 +284,72 @@ def _build_canvas_context(oe: OrchestrationEvent) -> str | None:
             lines.append(f"Nodos: {nodes}, Conexiones: {edges}")
 
     return "\n".join(lines)
+
+
+def _resolve_canvas_uuid_for_version_context(oe: OrchestrationEvent) -> str | None:
+    """Resolve the active canvas UUID without fetching canvas state."""
+    design_context = (oe.extra_params or {}).get("design_context", {}) or {}
+    canvas_uuid = design_context.get("canvas_uuid")
+    project_uuid = design_context.get("project_uuid")
+    if not canvas_uuid or not project_uuid:
+        recovered = _recover_design_context_from_session(oe)
+        canvas_uuid = canvas_uuid or recovered.get("canvas_uuid")
+        project_uuid = project_uuid or recovered.get("project_uuid")
+    if canvas_uuid:
+        return str(canvas_uuid)
+
+    canvases = _fetch_canvases(oe, project_uuid)
+    if canvases:
+        fallback_uuid = canvases[0].get("uuid")
+        if fallback_uuid:
+            return str(fallback_uuid)
+    return None
+
+
+def _build_current_canvas_version_context(oe: OrchestrationEvent) -> str | None:
+    """Fetch the API-authored current-version metadata system message."""
+    canvas_uuid = _resolve_canvas_uuid_for_version_context(oe)
+    if not canvas_uuid:
+        logger.info("Skipping canvas version context: no canvas_uuid resolved")
+        return None
+
+    try:
+        from api.canvas_requests import canvas_api_manager
+
+        # TODO: switch back to canvas_api_manager.call once the deployed foundation
+        # layer registers get_current_canvas_version_context.
+        url = (
+            f"{canvas_api_manager.base_url}/get-current-canvas-version-context?"
+            f"{urlencode({'canvas_uuid': canvas_uuid})}"
+        )
+        headers = {
+            "Authorization": f"Bearer {oe.access_token}",
+            "Organization-ID": str(oe.organization.organization_id),
+        }
+        api_response = canvas_api_manager.session.request(
+            "GET",
+            url,
+            headers=headers,
+        )
+        if api_response.status_code not in (200, 201):
+            logger.warning(
+                "API error for get_current_canvas_version_context: status=%s body=%s",
+                api_response.status_code,
+                getattr(api_response, "text", ""),
+            )
+            return None
+        response = api_response.json()
+        if response.get("version") is None:
+            logger.info("Skipping canvas version context: canvas %s has no version", canvas_uuid)
+            return None
+        context = response.get("context")
+        if not context:
+            logger.info("Skipping canvas version context: empty API context for %s", canvas_uuid)
+            return None
+        return str(context)
+    except Exception as e:
+        logger.warning("Failed to fetch current canvas version context: %s", e)
+        return None
 
 
 def _fetch_canvas_detail(oe: OrchestrationEvent, canvas_uuid: str) -> dict | None:
@@ -612,7 +690,7 @@ def _should_inject_operator_reminder(events: List[Dict[str, Any]]) -> bool:
         "message_to_agent",
         "message_to_email_agent",
     }
-    user_events = {"received_whatsapp_message", "received_email"}
+    user_events = {"received_whatsapp_message", "received_email", "canvas_designer_request"}
     sorted_events = sorted(events, key=lambda x: x.get("created_at", ""))
 
     has_operator = False
@@ -656,6 +734,7 @@ PROCESS_MAPPING_CONFIG = AgentConfig(
     prompt_builder=build_whatsapp_system_prompt,
     trigger_event_types=[
         "received_email",
+        "canvas_designer_request",
         "need_agent_whatsapp",
         "need_agent_email",
         "function_call_response",
@@ -690,6 +769,173 @@ class _ProcessMappingAgentWrapper(AgentWrapper):
     - Inject operator reminder when applicable
     - Inject special event messages for user_authenticated / notify_* events
     """
+
+    _REPLY_TOOLS = {
+        "email": {"EmailAlUsuarioFn"},
+        "canvas": {"ReplyInCanvasFn"},
+        "whatsapp": {"WhatsappAlUsuarioFn"},
+    }
+
+    def _initialize_dynamic_tools(self) -> None:
+        """Load equipped tools and hard-gate reply tools for the current channel."""
+        super()._initialize_dynamic_tools()
+        self._filter_reply_tools_for_channel()
+
+    @staticmethod
+    def _event_uuid(event: Dict[str, Any]) -> str | None:
+        value = event.get("event_id") or event.get("uuid")
+        return str(value) if value else None
+
+    @staticmethod
+    def _agent_turn_uuid_from_extra(extra: Dict[str, Any]) -> str | None:
+        value = extra.get("agent_turn_uuid")
+        if value:
+            return str(value)
+        tool_calls = extra.get("tool_calls") or []
+        for tool_call in tool_calls:
+            args = tool_call.get("args") or {}
+            value = args.get("agent_turn_uuid")
+            if value:
+                return str(value)
+        return None
+
+    def _resolve_stable_agent_turn_uuid(self) -> str:
+        """Return the original trigger UUID for this agent turn/tool chain."""
+        current_extra = self.orchestration_event.extra_params or {}
+        explicit = self._agent_turn_uuid_from_extra(current_extra)
+        if explicit:
+            return explicit
+
+        events = getattr(self, "_raw_events", []) or []
+        current_event_id = str(self.orchestration_event.event_id)
+        ordered = sorted(events, key=lambda ev: ev.get("created_at", ""))
+        current_index = next(
+            (
+                idx for idx, event in enumerate(ordered)
+                if self._event_uuid(event) == current_event_id
+            ),
+            None,
+        )
+        relevant = ordered[: current_index + 1] if current_index is not None else ordered
+
+        for event in reversed(relevant):
+            explicit = self._agent_turn_uuid_from_extra(event.get("extra_params") or {})
+            if explicit:
+                return explicit
+
+        for event in reversed(relevant):
+            if event.get("event_type") in AGENT_TURN_TRIGGER_EVENTS:
+                event_uuid = self._event_uuid(event)
+                if event_uuid:
+                    return event_uuid
+
+        return current_event_id
+
+    def _resolve_reply_channel(self) -> str:
+        extra = self.orchestration_event.extra_params or {}
+        reply_channel = str(extra.get("reply_channel") or "").strip().lower()
+        if reply_channel in self._REPLY_TOOLS:
+            return reply_channel
+        if self.orchestration_event.event_type == "canvas_designer_request":
+            return "canvas"
+        if self.orchestration_event.event_type in WHATSAPP_ONLY_EVENTS:
+            return "whatsapp"
+        return "email"
+
+    def _filter_reply_tools_for_channel(self) -> None:
+        """Remove mismatched terminal reply tools before the LLM sees schemas."""
+        if not self.function_schemas and not self.tool_selection_dict:
+            return
+
+        reply_channel = self._resolve_reply_channel()
+        allowed_reply_tools = self._REPLY_TOOLS[reply_channel]
+        all_reply_tools = set().union(*self._REPLY_TOOLS.values())
+
+        self.all_dynamic_tools = [
+            tool for tool in self.all_dynamic_tools
+            if self._is_allowed_tool_name(tool.__name__, allowed_reply_tools, all_reply_tools)
+        ]
+        self.tool_selection_dict = {
+            name: tool
+            for name, tool in self.tool_selection_dict.items()
+            if self._is_allowed_tool_name(name, allowed_reply_tools, all_reply_tools)
+        }
+        self.function_schemas = [
+            schema
+            for schema in self.function_schemas
+            if self._is_allowed_tool_name(
+                self._schema_tool_name(schema),
+                allowed_reply_tools,
+                all_reply_tools,
+            )
+        ]
+        logger.info(
+            "Reply tool hard gate applied: channel=%s allowed=%s loaded_tools=%s",
+            reply_channel,
+            sorted(allowed_reply_tools),
+            sorted(self.tool_selection_dict.keys()),
+        )
+
+    @staticmethod
+    def _schema_tool_name(schema: Dict[str, Any]) -> str:
+        return schema.get("function", {}).get("name") or schema.get("name") or ""
+
+    @staticmethod
+    def _is_allowed_tool_name(
+        name: str,
+        allowed_reply_tools: set[str],
+        all_reply_tools: set[str],
+    ) -> bool:
+        return name not in all_reply_tools or name in allowed_reply_tools
+
+    def _build_tool_extra_params(self, tool_call: Dict[str, Any]) -> Dict[str, Any]:
+        original_extra = self.orchestration_event.extra_params or {}
+        extra_params = {
+            "tool_calls": [tool_call],
+            "function_uuid": self._get_tool_function_uuid(tool_call.get("name", "")),
+            "tool_call_id": tool_call.get("id", ""),
+            "original_source": self.config.source_name,
+        }
+        for key in (
+            "reply_channel",
+            "conversation_uuid",
+            "sender",
+            "sender_organization_customer_uuid",
+            "invited_organization_customer_uuid",
+            "design_context",
+        ):
+            if key in original_extra:
+                extra_params[key] = original_extra[key]
+
+        if "reply_channel" not in extra_params:
+            extra_params["reply_channel"] = self._resolve_reply_channel()
+
+        return extra_params
+
+    def _invoke_tool(self, tool_call: Dict[str, Any]) -> None:
+        """Invoke a tool while preserving channel and sender context."""
+        try:
+            args = tool_call.get("args")
+            if not isinstance(args, dict):
+                args = {}
+                tool_call["args"] = args
+            args.setdefault("agent_turn_uuid", self._resolve_stable_agent_turn_uuid())
+
+            tool_name = tool_call.get("name", "")
+            extra_params = self._build_tool_extra_params(tool_call)
+            evolved_uuid = self._evolve_to_function_call(orchestrator_api_manager, extra_params)
+            function_call_event = self._build_function_call_event(evolved_uuid, extra_params)
+            self._forward_to_kafka(orchestrator_api_manager, function_call_event)
+
+            logger.info(
+                "Invoked tool: %s [evolved from %s -> %s]",
+                tool_name,
+                self.orchestration_event.event_id,
+                evolved_uuid,
+            )
+        except Exception as e:
+            logger.error("Error invoking tool: %s", e, exc_info=True)
+            raise
 
     def _build_system_prompt(self) -> str:
         """Build system prompt, applying template variables to socket context.
@@ -782,6 +1028,16 @@ class _ProcessMappingAgentWrapper(AgentWrapper):
             messages.append(reminder)
             logger.info("Injected pipeline collection reminder")
 
+        reply_channel = self._resolve_reply_channel()
+        messages.append({
+            "role": "system",
+            "content": (
+                "## Canal de respuesta actual\n"
+                f"reply_channel: {reply_channel}\n"
+                "Solo esta disponible la herramienta terminal del canal actual."
+            ),
+        })
+
         canvas_context = _build_canvas_context(self.orchestration_event)
         if canvas_context:
             logger.info("Appending canvas context system message (%d chars)", len(canvas_context))
@@ -792,10 +1048,21 @@ class _ProcessMappingAgentWrapper(AgentWrapper):
             logger.info("Appending user profile context system message (%d chars)", len(user_profile_context))
             messages.append({"role": "system", "content": user_profile_context})
 
+        version_context = _build_current_canvas_version_context(self.orchestration_event)
+        if version_context:
+            logger.info("Appending current canvas version system message (%d chars)", len(version_context))
+            logger.info(
+                "Current Canvas Version prompt metadata: %s",
+                version_context.replace("\n", " ")[:500],
+            )
+            messages.append({"role": "system", "content": version_context})
+
         return messages
 
     def _is_email_conversation(self, orchestration_events: List[Dict[str, Any]]) -> bool:
         event_type = self.orchestration_event.event_type
+        if self._resolve_reply_channel() == "canvas":
+            return True
         if event_type in EMAIL_ONLY_EVENTS:
             return True
         if event_type in WHATSAPP_ONLY_EVENTS:
@@ -803,7 +1070,9 @@ class _ProcessMappingAgentWrapper(AgentWrapper):
 
         extra = self.orchestration_event.extra_params or {}
         channel_name = str(extra.get("channel") or extra.get("channel_type") or "").lower()
-        if channel_name in ("email", "whatsapp"):
+        if channel_name in ("email", "whatsapp", "canvas"):
+            if channel_name == "canvas":
+                return True
             return channel_name == "email"
 
         for evt in reversed(sorted(orchestration_events, key=lambda x: x.get("created_at", ""))):
@@ -833,7 +1102,8 @@ class _ProcessMappingAgentWrapper(AgentWrapper):
 
             channel_map: Dict[str, Any] = {}
             is_email = self._is_email_conversation(orchestration_events)
-            channel_kind = "email" if is_email else "whatsapp"
+            reply_channel = self._resolve_reply_channel()
+            channel_kind = reply_channel if reply_channel in ("email", "canvas") else "whatsapp"
             if self.orchestration_event.channel_id:
                 channel_map[self.orchestration_event.channel_id] = (0, channel_kind)
 
