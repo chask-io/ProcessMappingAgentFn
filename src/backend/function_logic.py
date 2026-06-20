@@ -86,6 +86,7 @@ def _check_api_response(response: dict, label: str) -> bool:
     return True
 
 
+# SYNC: canvas-map result renderer mirrored in canvas_designer_agent/src/backend/function_logic.py — keep identical.
 def _get_canvas_map_api_manager() -> ApiManager:
     """Return a local canvas API manager for endpoints not yet in the API layer."""
     global _canvas_map_api_manager
@@ -410,11 +411,8 @@ def _format_examples(examples: list, include_channel: bool) -> list[str]:
         content = _excerpt(example.get("written_content") or "")
         attachments = example.get("attachments") or []
         attachment_suffix = _format_attachment_suffix(attachments)
-        if include_channel:
-            channel = example.get("expected_channel") or "sin-canal"
-            lines.append(f"{index}. [{channel}] {title} - {content}{attachment_suffix}")
-        else:
-            lines.append(f"{index}. {title} - {content}{attachment_suffix}")
+        prefix = f"[{example.get('expected_channel') or 'sin-canal'}] " if include_channel else ""
+        lines.append(f"{index}. {prefix}{title} - {content}{attachment_suffix}")
     return lines
 
 
