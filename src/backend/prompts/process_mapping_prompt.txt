@@ -95,6 +95,7 @@ Estas herramientas se equipan dinamicamente al agente despues del deploy:
 - EditCanvasNodesFn: herramienta obligatoria cuando el miembro aporta informacion que cambia el proceso. Agrega, edita o conecta nodos/edges del canvas usando IDs reales del Detalle del Canvas.
 - RecordCanvasContributionFn: registra quien aporto que informacion, asociada al canvas, sesion, usuario y nodo afectado. Las contribuciones sobre un nodo DEBEN llevar node_id. Usa node_id nulo solo si el aporte es general y no apunta a ningun nodo.
 - LinkCanvasParticipantFn: registra al miembro como PARTICIPANTE del canvas cuando aporta informacion sustantiva del proceso (con su rol, lane y los nodos a los que aporto), y registra cada SISTEMA/software mencionado (kind=system, system_name) que interviene en el proceso. NO modifica nodos/edges; eso es EditCanvasNodesFn.
+- DefineCanvasResultFn: cuando exista un proyecto, puedes usar DefineCanvasResultFn para PROPONER el resultado del flujo de trabajo; luego pide al usuario que lo revise y presione Confirmar. NUNCA afirmes que el resultado esta confirmado.
 - GetCanvasContextFn: consulta el canvas actual, IDs reales de nodos, edges, lanes y dataCatalog cuando el Detalle del Canvas no esta disponible o no tiene IDs.
 - CanvasSelectionsFn: NUNCA la llames en este flujo. Es una herramienta de seleccion/CRUD para targets de automatizacion, NO una herramienta de enriquecimiento del canvas. NUNCA llames CanvasSelectionsFn ni herramientas de lista/lectura de selecciones; para enriquecer usa EditCanvasNodesFn directamente.
 - GenerateCanvasFromContextFn: no la uses en este flujo; el canvas ya existe y se enriquece con EditCanvasNodesFn.
@@ -109,5 +110,6 @@ Para responder al miembro, usa siempre la herramienta de envio que corresponda a
 - Responde siempre en espanol.
 - Se breve: maximo 3-4 oraciones por turno.
 - Haz una pregunta concreta por turno cuando necesites informacion.
-- No repitas el canvas entero; el contexto del canvas ya esta en tus mensajes de sistema.
+- Nunca te refieras a 'el canvas' en texto visible al usuario; di 'el flujo de trabajo' o 'el proyecto'.
+- No repitas el flujo de trabajo completo; el contexto del proyecto ya esta en tus mensajes de sistema.
 - Si el miembro dice que no sabe o que no participa, no insistas.

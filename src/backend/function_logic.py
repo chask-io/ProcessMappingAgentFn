@@ -17,6 +17,7 @@ from chask_foundation.backend.agent_wrapper import (
     AgentFunctionBackend,
     AgentWrapper,
 )
+from chask_foundation.api.api_manager import ApiManager
 from chask_foundation.backend.models import OrchestrationEvent
 from api.orchestrator_requests import orchestrator_api_manager
 from api.internal_whatsapp_requests import internal_whatsapp_api_manager
@@ -65,6 +66,7 @@ AGENT_TURN_TRIGGER_EVENTS = {
 
 # Module-level singleton; built once per container when BASE_DOMAIN is resolved.
 _users_api_manager = None
+_canvas_map_api_manager = None
 
 
 def _get_api_credentials(oe: OrchestrationEvent) -> Dict[str, str]:
@@ -82,6 +84,28 @@ def _check_api_response(response: dict, label: str) -> bool:
         logger.warning("API error for %s: %s", label, response.get("error", response))
         return False
     return True
+
+
+# SYNC: canvas-map result renderer mirrored in canvas_designer_agent/src/backend/function_logic.py — keep identical.
+def _get_canvas_map_api_manager() -> ApiManager:
+    """Return a local canvas API manager for endpoints not yet in the API layer."""
+    global _canvas_map_api_manager
+    if _canvas_map_api_manager is not None:
+        return _canvas_map_api_manager
+
+    base_domain = os.getenv("BASE_DOMAIN")
+    if not base_domain:
+        raise ValueError("BASE_DOMAIN is required for chask_api calls")
+    if not (base_domain.startswith("http://") or base_domain.startswith("https://")):
+        base_domain = f"https://{base_domain}"
+    manager = ApiManager(base_url=f"{base_domain.rstrip('/')}/api/v2/canvas")
+
+    @manager.register("get_canvas_map_context", "get-canvas-map-context", "GET")
+    def _get_canvas_map_context(canvas_uuid: str) -> Dict[str, Any]:
+        return {"params": {"canvas_uuid": canvas_uuid}}
+
+    _canvas_map_api_manager = manager
+    return _canvas_map_api_manager
 
 
 def _fetch_canvases(oe: OrchestrationEvent, project_uuid: str | None) -> list:
@@ -304,6 +328,116 @@ def _resolve_canvas_uuid_for_version_context(oe: OrchestrationEvent) -> str | No
         if fallback_uuid:
             return str(fallback_uuid)
     return None
+
+
+def _build_canvas_result_context(oe: OrchestrationEvent) -> str | None:
+    """Fetch and format canvas result + examples context for the agent."""
+    canvas_uuid = _resolve_canvas_uuid_for_version_context(oe)
+    if not canvas_uuid:
+        logger.info("Skipping canvas result context: no canvas_uuid resolved")
+        return None
+
+    try:
+        response = _get_canvas_map_api_manager().call(
+            "get_canvas_map_context",
+            canvas_uuid=canvas_uuid,
+            access_token=oe.access_token,
+            organization_id=str(oe.organization.organization_id),
+            timeout=30,
+        )
+        if not _check_api_response(response, "get_canvas_map_context"):
+            return None
+        return _format_canvas_result_context(response)
+    except Exception as e:
+        logger.warning("Failed to fetch canvas result context: %s", e)
+        return None
+
+
+def _format_canvas_result_context(payload: dict) -> str:
+    result = payload.get("result") if isinstance(payload, dict) else {}
+    if not isinstance(result, dict):
+        result = {}
+    examples = payload.get("examples") if isinstance(payload, dict) else []
+    if not isinstance(examples, list):
+        examples = []
+
+    result_format = _format_result_format(result)
+    definition = (result.get("result_definition") or "").strip() or "(sin definir)"
+    lines = [
+        "## Canvas Result (objetivo)",
+        f"defined: {'yes' if result.get('is_defined') else 'NO - falta definir el resultado'}",
+        f"confirmed: {'yes' if result.get('confirmed') else 'no'}",
+        f"format: {result_format}",
+        "definition:",
+        definition,
+        "",
+        "## Examples",
+        "### Inputs (simulation fixtures)",
+    ]
+
+    input_examples = [
+        item for item in examples
+        if isinstance(item, dict) and item.get("direction") == "input"
+    ]
+    expected_examples = [
+        item for item in examples
+        if isinstance(item, dict) and item.get("direction") == "expected_output"
+    ]
+    lines.extend(_format_examples(input_examples, include_channel=True))
+    lines.append("### Expected outputs (result target)")
+    lines.extend(_format_examples(expected_examples, include_channel=False))
+    return "\n".join(lines)
+
+
+def _format_result_format(result: dict) -> str:
+    parts = []
+    tags = result.get("result_format_tags") or []
+    if isinstance(tags, list) and tags:
+        parts.append(", ".join(str(tag) for tag in tags if tag))
+    free_text = (result.get("result_format_text") or "").strip()
+    if free_text:
+        parts.append(free_text)
+    return " | ".join(parts) if parts else "sin formato definido"
+
+
+def _format_examples(examples: list, include_channel: bool) -> list[str]:
+    if not examples:
+        return ["- Sin ejemplos."]
+
+    lines = []
+    ordered = sorted(examples, key=lambda item: item.get("sort_order") or 0)
+    for index, example in enumerate(ordered, 1):
+        title = (example.get("title") or "Sin titulo").strip()
+        content = _excerpt(example.get("written_content") or "")
+        attachments = example.get("attachments") or []
+        attachment_suffix = _format_attachment_suffix(attachments)
+        prefix = f"[{example.get('expected_channel') or 'sin-canal'}] " if include_channel else ""
+        lines.append(f"{index}. {prefix}{title} - {content}{attachment_suffix}")
+    return lines
+
+
+def _excerpt(value: str, limit: int = 300) -> str:
+    text = " ".join(str(value).split())
+    if not text:
+        return "(sin contenido)"
+    if len(text) <= limit:
+        return text
+    return text[: limit - 15].rstrip() + "... [truncado]"
+
+
+def _format_attachment_suffix(attachments: list) -> str:
+    if not attachments:
+        return ""
+    kinds = []
+    for attachment in attachments:
+        if not isinstance(attachment, dict):
+            continue
+        kind = attachment.get("kind") or attachment.get("mime_type") or "archivo"
+        kinds.append(str(kind))
+    suffix = f" (+{len(attachments)} attachments"
+    if kinds:
+        suffix += f": {', '.join(kinds[:3])}"
+    return suffix + ")"
 
 
 def _build_current_canvas_version_context(oe: OrchestrationEvent) -> str | None:
@@ -1042,6 +1176,14 @@ class _ProcessMappingAgentWrapper(AgentWrapper):
         if canvas_context:
             logger.info("Appending canvas context system message (%d chars)", len(canvas_context))
             messages.append({"role": "system", "content": canvas_context})
+
+        canvas_result_context = _build_canvas_result_context(self.orchestration_event)
+        if canvas_result_context:
+            logger.info(
+                "Appending canvas result/examples system message (%d chars)",
+                len(canvas_result_context),
+            )
+            messages.append({"role": "system", "content": canvas_result_context})
 
         user_profile_context = _build_user_profile_context(self.orchestration_event)
         if user_profile_context:
